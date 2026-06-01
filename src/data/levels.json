@@ -1,0 +1,66 @@
+[
+  {
+    "id": 1,
+    "title": "Level 1: The Way of Tao (道仁之辩)",
+    "narrative": "In the middle of the Spring and Autumn Period, rituals collapsed. Confucius, harboring the ambition of benevolent governance, traveled to Luoyang to visit Laozi. On an ancient path filled with autumn wind, a dialogue between 'Tao' and 'Ren' quietly begins...",
+    "bgImage": "/assets/level-1/bg.png",
+    "introVideo": "/assets/level-1/video-intro.mp4",
+    "outroVideo": "/assets/level-1/video-end.mp4",
+    "music": "/assets/level-1/music-theme.mp3",
+    "npcName": "Laozi (老子)",
+    "playerRole": "Confucius",
+    "systemPrompt": "You are Laozi...",
+    "tasks": [
+      "Greeting the Master",
+      "Discussing Benevolence",
+      "Farewell to Lu"
+    ],
+    "hints": {
+      "keywords": ["Tao", "Benevolence"],
+      "sentence": "I come here to pay my respects."
+    }
+  },
+  {
+    "id": "level-2",
+    "title": "第二章 · 非攻之辩",
+    "chapter": "第二章",
+    "desc": "墨子劝说楚王放弃攻宋",
+    "assets": {
+      "background": "/assets/level-2/bg.png",
+      "introVideo": "/assets/level-2/video-intro.mp4",
+      "bgm": "/assets/level-2/music-theme.mp3"
+    },
+    "playerRole": {
+      "name": "Mozi",
+      "nameCN": "墨子",
+      "avatar": "/assets/common/avatar-mozi.png" 
+    },
+    "npcRole": {
+      "name": "King of Chu",
+      "nameCN": "楚王",
+      "avatar": "/assets/common/avatar-king.png",
+      "description": "楚国国君，好战喜功"
+    },
+    "tasks": [
+      { "id": 1, "text": "Introduce yourself and the idea of 'Non-aggression' (非攻)", "completed": false },
+      { "id": 2, "text": "Persuade the King to stop attacking Song", "completed": false }
+    ],
+    "hints": {
+      "keywords": [
+        { "word": "non-aggression", "phonetic": "/ˌnɒn əˈɡreʃn/", "cn": "非攻" },
+        { "word": "attack", "phonetic": "/əˈtæk/", "cn": "攻打" },
+        { "word": "persuade", "phonetic": "/pəˈsweɪd/", "cn": "劝说" }
+      ],
+      "sentences": [
+        "I am Mozi, here to persuade you to give up attacking Song.",
+        "War brings suffering to the people and no benefit to the state."
+      ]
+    },
+    "introNarrative": "春秋晚期，诸侯争霸。楚国强盛，欲伐宋国。墨子心怀兼爱非攻之志，徒步千里，只身入楚，欲止干戈……",
+    "systemPrompt": "You are the King of Chu (楚王). User plays as Mozi. You are arrogant and want to attack Song. Challenge Mozi's ideas initially."
+  }
+
+
+
+]
+
