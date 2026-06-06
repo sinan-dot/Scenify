@@ -1,13 +1,16 @@
 "use client";
-import React, { useState, useRef, useEffect } from 'react';
-import styled, { css } from 'styled-components';
-// --- 新增引用 ---
-import levelsData from '../data/levels.json'; // 引入剧本数据
-import IntroVideoPlayer from '../components/IntroVideoPlayer';// 引入视频组件
-import LevelCompleteModal from '../components/LevelCompleteModal';// 引入弹窗组件
-// ----------------
 
-// ================= 1. 样式定义 (保持不变) =================
+import React, { useEffect, useRef, useState } from 'react';
+import styled from 'styled-components';
+import { AudioRecorder } from '@/components/audioRecorder';
+import { ChatWindow, type ChatWindowMessage } from '@/components/chatWindow';
+import { MapTransition } from '@/components/MapTransition';
+import { PronunciationFeedback } from '@/components/pronunciationFeedback';
+import { TaskPanel } from '@/components/taskPanel';
+import { LevelManagerProvider, useLevelManager } from '@/context/levelManager';
+import { MediaPlaybackProvider, useMediaPlayback } from '@/context/mediaPlaybackManager';
+import { useAudioRecorder } from '@/hooks/useAudioRecorder';
+import type { SpeechEvaluationResult, TaskValidationResult } from '@/lib/types';
 
 const Page = styled.div`
   display: flex;
@@ -21,10 +24,10 @@ const Page = styled.div`
   * { box-sizing: border-box; }
 `;
 
-const BackgroundLayer = styled.div<{ $blur: boolean }>`
+const BackgroundLayer = styled.div<{ $blur: boolean; $image: string }>`
   position: absolute;
   inset: 0;
-  background-image: url('/assets/level-1/bg.png');
+  background-image: url('${props => props.$image}');
   background-size: cover;
   background-position: center;
   transition: filter 1s ease;
@@ -49,230 +52,6 @@ const LeftSection = styled.div`
   justify-content: flex-end;
   padding: 40px;
   gap: 20px;
-`;
-
-const ChatWindow = styled.div`
-  height: 55%; 
-  margin-top: auto; 
-  background: rgba(255, 255, 255, 0.1); 
-  backdrop-filter: blur(10px);
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  padding: 20px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-  &::-webkit-scrollbar { width: 4px; }
-  &::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
-`;
-
-const MessageRow = styled.div<{ $isUser: boolean }>`
-  display: flex;
-  justify-content: ${props => props.$isUser ? 'flex-end' : 'flex-start'};
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
-`;
-
-const Avatar = styled.div<{ $isUser: boolean }>`
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background-color: ${props => props.$isUser ? '#b45309' : '#e2e8f0'};
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: bold;
-  color: ${props => props.$isUser ? '#fff' : '#333'};
-  border: 2px solid rgba(255,255,255,0.4);
-  font-size: 0.8rem;
-  flex-shrink: 0;
-`;
-
-const MessageContent = styled.div`
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-width: 85%;
-`;
-
-const AudioBubble = styled.div<{ $isUser: boolean; $playing: boolean }>`
-  padding: 10px 16px;
-  border-radius: 10px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 80px;
-  transition: all 0.2s;
-  ${props => props.$isUser && css`
-    background: rgba(180, 83, 9, 0.7); 
-    border: 1px solid rgba(251, 191, 36, 0.3);
-    color: #fff;
-    justify-content: flex-end;
-  `}
-  ${props => !props.$isUser && css`
-    background: rgba(255, 255, 255, 0.2); 
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    color: #fff;
-    justify-content: flex-start;
-  `}
-  &:hover { filter: brightness(1.1); }
-  .wave-icon {
-    font-size: 1rem;
-    animation: ${props => props.$playing ? 'pulse 1s infinite' : 'none'};
-  }
-  @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
-`;
-
-// 报告卡片 (玻璃磨砂风格)
-const TextBubble = styled.div`
-  background: rgba(255, 255, 255, 0.15); 
-  backdrop-filter: blur(15px);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,0.2);
-  padding: 20px;
-  border-radius: 12px;
-  line-height: 1.8;
-  font-size: 1rem;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-  white-space: pre-wrap; 
-  h3 { color: #fbbf24; margin-top: 15px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 5px; }
-  strong { color: #86efac; }
-`;
-
-const TranscriptText = styled.div`
-  font-size: 0.9rem;
-  color: #cbd5e1;
-  background: rgba(0,0,0,0.4);
-  padding: 8px 12px;
-  border-radius: 8px;
-  margin-top: 2px;
-`;
-
-const ConvertBtn = styled.span`
-  font-size: 0.75rem;
-  color: rgba(255,255,255,0.6);
-  cursor: pointer;
-  align-self: flex-end;
-  &:hover { color: #fbbf24; }
-`;
-
-const BottomPanel = styled.div`
-  background: rgba(255, 255, 255, 0.15); 
-  backdrop-filter: blur(20px); 
-  border-radius: 20px;
-  padding: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.3); 
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-  position: relative; 
-`;
-
-const InputGroup = styled.div`
-  display: flex;
-  gap: 10px;
-  align-items: center;
-`;
-
-const SwitchModeBtn = styled.button`
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: 1px solid rgba(255,255,255,0.3);
-  background: rgba(255,255,255,0.1);
-  color: white;
-  font-size: 1.2rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  &:hover { background: rgba(255,255,255,0.2); }
-`;
-
-const TextInput = styled.input`
-  flex: 1;
-  padding: 12px 16px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  background: rgba(0, 0, 0, 0.3);
-  color: white;
-  font-size: 1rem;
-  outline: none;
-  &:focus { border-color: #fbbf24; }
-`;
-
-const VoiceHoldBtn = styled.button<{ $recording: boolean }>`
-  flex: 1;
-  padding: 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(255,255,255,0.3);
-  background: ${props => props.$recording ? '#ef4444' : 'rgba(255,255,255,0.2)'};
-  color: white;
-  font-weight: bold;
-  cursor: pointer;
-  user-select: none;
-  &:active { filter: brightness(0.8); }
-`;
-
-const SendButton = styled.button`
-  padding: 0 25px;
-  height: 45px;
-  border-radius: 8px;
-  background: #b45309;
-  color: white;
-  font-weight: bold;
-  border: none;
-  cursor: pointer;
-  &:hover { background: #d97706; }
-`;
-
-const RightSection = styled.div`
-  width: 30%;
-  height: 100%;
-  background-color: rgba(255, 255, 255, 0.25); 
-  backdrop-filter: blur(16px); 
-  padding: 150px 30px 60px 30px; 
-  display: flex;
-  flex-direction: column;
-  z-index: 10;
-  border-left: 1px solid rgba(255, 255, 255, 0.4);
-  color: #000;
-  box-sizing: border-box;
-`;
-
-const Header = styled.h1`
-  font-size: 2.2rem;
-  margin-bottom: 40px;
-  font-weight: bold; 
-  color: #000000;
-  border-bottom: 2px solid rgba(0, 0, 0, 0.8);
-  padding-bottom: 20px;
-`;
-
-const TaskList = styled.ul`
-  list-style: none;
-  padding: 0;
-`;
-
-const TaskItem = styled.li<{ $done: boolean }>`
-  margin-bottom: 25px;
-  font-size: 1.2rem;
-  color: ${props => props.$done ? '#b45309' : '#1e293b'}; 
-  font-weight: ${props => props.$done ? 'bold' : 'normal'};
-  cursor: pointer;
-  transition: all 0.5s ease;
-  display: flex;
-  align-items: center;
-  &:hover { color: #b45309; transform: translateX(10px); }
-  &::before { 
-    content: '${props => props.$done ? '✔' : '◈'}'; 
-    color: #b45309; 
-    margin-right: 12px; 
-  }
 `;
 
 const IntroOverlay = styled.div`
@@ -326,370 +105,1030 @@ const FullScreenVideo = styled.video`
   object-fit: contain;
 `;
 
-const HintKeywords = styled.div`
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
-  font-size: 0.9rem;
-  color: #e2e8f0;
-`;
-const Keyword = styled.span`
-  color: #fbbf24; font-weight: 600; background: rgba(0,0,0,0.4); padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(251,191,36,0.2);
-`;
-
-// ================= 2. 逻辑组件 =================
-
-type Message = {
-  id: number;
-  role: 'user' | 'assistant';
-  text: string;
-  isAudio: boolean; 
-  audioUrl?: string;
-  duration?: number;
-  showTranscript: boolean;
-};
-
-const Main: React.FC = () => {
-  const [gameState, setGameState] = useState('start');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
-  const [isRecording, setIsRecording] = useState(false);
-  const [inputText, setInputText] = useState("");
-  const [playingId, setPlayingId] = useState<number | null>(null);
-  const [taskStatus, setTaskStatus] = useState([false, false, false]);
-  
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
-  const transcriptRef = useRef("");
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+function ManagedFullScreenVideo({
+  src,
+  onEnded,
+}: {
+  src: string;
+  onEnded: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const { notifyVideoPlay, notifyVideoEnd, notifyVideoUnmount } = useMediaPlayback();
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'webkitSpeechRecognition' in window) {
-      // @ts-ignore
-      const recognition = new window.webkitSpeechRecognition();
-      recognition.lang = 'en-US';
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.onresult = (e: any) => {
-        let final = "";
-        for (let i = e.resultIndex; i < e.results.length; ++i) {
-          if (e.results[i].isFinal) final += e.results[i][0].transcript;
-        }
-        if (final) transcriptRef.current += final + " ";
-      };
-      recognitionRef.current = recognition;
+    const video = videoRef.current;
+    return () => notifyVideoUnmount(video);
+  }, [notifyVideoUnmount]);
+
+  return (
+    <FullScreenVideo
+      ref={videoRef}
+      autoPlay
+      src={src}
+      onPlay={(event) => notifyVideoPlay(event.currentTarget)}
+      onEnded={(event) => {
+        notifyVideoEnd(event.currentTarget);
+        onEnded();
+      }}
+    />
+  );
+}
+
+type Message = ChatWindowMessage;
+
+const BGM_IDLE_VOLUME = 0.15;
+const BGM_DUCK_VOLUME = 0.05;
+const BGM_RECORDING_VOLUME = 0;
+const NPC_VOICE_VOLUME = 1.0;
+const BGM_FADE_DURATION_MS = 500;
+const BGM_RESTORE_FADE_DURATION_MS = 2500;
+const MIC_RELEASE_COOLDOWN_MS = 900;
+
+function clampVolume(volume: number) {
+  return Math.max(0, Math.min(1, volume));
+}
+
+function renderNarrative(text: string) {
+  return text.split('\n').map((line, index) => (
+    <React.Fragment key={`${line}-${index}`}>
+      {line}
+      {index < text.split('\n').length - 1 && <br />}
+    </React.Fragment>
+  ));
+}
+
+function cleanSpeechText(text: string) {
+  return text.replace(/\*.*?\*/g, '').replace(/\(.*?\)/g, '').trim();
+}
+
+function hasEnglishSpeechText(text: string) {
+  return /[A-Za-z]/.test(text.trim());
+}
+
+function scoreConfuciusVoice(voice: SpeechSynthesisVoice) {
+  const name = voice.name.toLowerCase();
+  const lang = voice.lang.toLowerCase();
+  let score = 0;
+
+  if (lang.startsWith('en')) score += 30;
+  if (lang.includes('gb') || lang.includes('uk')) score += 10;
+  if (lang.includes('us')) score += 6;
+  if (voice.localService) score += 5;
+
+  const olderOrDeeperVoiceNames = [
+    'daniel',
+    'george',
+    'david',
+    'james',
+    'arthur',
+    'oliver',
+    'rishi',
+    'google uk english male',
+    'microsoft george',
+    'microsoft david',
+  ];
+  const olderButLessNaturalVoiceNames = [
+    'grandpa',
+    'fred',
+    'ralph',
+    'albert',
+  ];
+
+  const youngOrBrightVoiceNames = [
+    'alex',
+    'junior',
+    'child',
+    'kid',
+    'young',
+    'samantha',
+    'zira',
+    'susan',
+    'karen',
+    'victoria',
+    'tessa',
+    'female',
+  ];
+
+  if (olderOrDeeperVoiceNames.some((keyword) => name.includes(keyword))) {
+    score += 70;
+  }
+
+  if (olderButLessNaturalVoiceNames.some((keyword) => name.includes(keyword))) {
+    score += 35;
+  }
+
+  if (name.includes('male')) score += 25;
+  if (youngOrBrightVoiceNames.some((keyword) => name.includes(keyword))) score -= 45;
+  if (!lang.startsWith('en')) score -= 50;
+
+  return score;
+}
+
+function isYoungOrBrightVoice(voice: SpeechSynthesisVoice) {
+  const name = voice.name.toLowerCase();
+  return [
+    'alex',
+    'junior',
+    'child',
+    'kid',
+    'young',
+    'samantha',
+    'zira',
+    'susan',
+    'karen',
+    'victoria',
+    'tessa',
+    'female',
+  ].some((keyword) => name.includes(keyword));
+}
+
+function selectConfuciusVoice(voices: SpeechSynthesisVoice[]) {
+  const englishVoices = voices.filter((voice) => voice.lang.toLowerCase().startsWith('en'));
+  const matureVoices = englishVoices.filter((voice) => !isYoungOrBrightVoice(voice));
+  const candidateVoices = matureVoices.length > 0 ? matureVoices : englishVoices;
+
+  return candidateVoices
+    .sort((a, b) => scoreConfuciusVoice(b) - scoreConfuciusVoice(a))[0];
+}
+
+function loadSpeechVoices() {
+  return new Promise<SpeechSynthesisVoice[]>((resolve) => {
+    const synth = window.speechSynthesis;
+    const voices = synth.getVoices();
+
+    if (voices.length > 0) {
+      resolve(voices);
+      return;
     }
+
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      synth.removeEventListener('voiceschanged', finish);
+      resolve(synth.getVoices());
+    };
+
+    synth.addEventListener('voiceschanged', finish);
+    window.setTimeout(finish, 500);
+  });
+}
+
+const Main: React.FC = () => {
+  const {
+    currentLevel,
+    currentLevelIndex,
+    gameState,
+    taskStatus,
+    setGameState,
+    applyTaskValidation,
+    completeAllTasks,
+    goToNextLevel,
+  } = useLevelManager();
+
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
+  const [inputText, setInputText] = useState('');
+  const [playingId, setPlayingId] = useState<number | null>(null);
+  const [displayedNarrative, setDisplayedNarrative] = useState(currentLevel.narrative);
+  const [isNarrativeComplete, setIsNarrativeComplete] = useState(true);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [isAwaitingNpc, setIsAwaitingNpc] = useState(false);
+  const [isLevelCleared, setIsLevelCleared] = useState(false);
+  const [pronunciationResult, setPronunciationResult] = useState<SpeechEvaluationResult | null>(null);
+  const [isEvaluatingSpeech, setIsEvaluatingSpeech] = useState(false);
+  const [pronunciationError, setPronunciationError] = useState<string | null>(null);
+
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const openingTimerRef = useRef<number | null>(null);
+  const fallbackSpeechRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioUnlockedRef = useRef(false);
+  const pendingOpeningTextRef = useRef<string | null>(null);
+  const audioElementsByUrlRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const preloadedAudioElementsRef = useRef<Map<number, HTMLAudioElement>>(new Map());
+  const bgmFadeFrameRef = useRef<number | null>(null);
+  const bgmRestoreTimerRef = useRef<number | null>(null);
+  const bgmWasPlayingBeforeRecordingRef = useRef(false);
+  const isNpcSpeakingRef = useRef(false);
+  const isRecordingRef = useRef(false);
+  const outputBlockedUntilRef = useRef(0);
+  const activeSpeechAudioRef = useRef<HTMLAudioElement | null>(null);
+  const activeSpeechTokenRef = useRef<symbol | null>(null);
+  const levelSessionRef = useRef(0);
+  const activeRecordingSessionRef = useRef(0);
+  const isLevelClearedRef = useRef(false);
+
+  const getOutputBlockDelay = () => Math.max(0, outputBlockedUntilRef.current - Date.now());
+  const isCurrentLevelSession = (sessionId: number) => sessionId === levelSessionRef.current;
+
+  const waitForOutputReady = async () => {
+    while (isRecordingRef.current || getOutputBlockDelay() > 0) {
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, Math.max(50, getOutputBlockDelay()));
+      });
+    }
+  };
+
+  const stopActiveSpeech = () => {
+    activeSpeechTokenRef.current = null;
+    isNpcSpeakingRef.current = false;
+
+    const fallbackSpeech = fallbackSpeechRef.current;
+    if (fallbackSpeech) {
+      fallbackSpeech.onend = null;
+      fallbackSpeech.onerror = null;
+      fallbackSpeechRef.current = null;
+    }
+
+    window.speechSynthesis.cancel();
+
+    const activeAudio = activeSpeechAudioRef.current;
+    if (activeAudio) {
+      activeAudio.pause();
+      activeAudio.onended = null;
+      activeAudio.onerror = null;
+      try {
+        activeAudio.currentTime = 0;
+      } catch {}
+      activeSpeechAudioRef.current = null;
+      ttsAudioRef.current = null;
+    }
+  };
+
+  const stopNonBgmOutputs = () => {
+    stopActiveSpeech();
+    preloadedAudioElementsRef.current.forEach((audio) => {
+      audio.pause();
+      try {
+        audio.currentTime = 0;
+      } catch {}
+    });
+    audioElementsByUrlRef.current.forEach((audio) => {
+      audio.pause();
+      try {
+        audio.currentTime = 0;
+      } catch {}
+    });
+  };
+
+  const duckBgmForRecording = () => {
+    cancelBgmRestore();
+    const bgm = audioRef.current;
+    if (!bgm) return;
+
+    bgmWasPlayingBeforeRecordingRef.current = !bgm.paused;
+    fadeBgmVolume(BGM_RECORDING_VOLUME, 180);
+  };
+
+  const scheduleBgmRestore = () => {
+    const bgm = audioRef.current;
+    if (!bgm || !audioUnlockedRef.current || !bgmWasPlayingBeforeRecordingRef.current) return;
+
+    cancelBgmRestore();
+    bgmRestoreTimerRef.current = window.setTimeout(() => {
+      bgmRestoreTimerRef.current = null;
+
+      const remainingDelay = getOutputBlockDelay();
+      if (isRecordingRef.current) return;
+      if (remainingDelay > 0) {
+        scheduleBgmRestore();
+        return;
+      }
+
+      const targetVolume = isNpcSpeakingRef.current ? BGM_DUCK_VOLUME : BGM_IDLE_VOLUME;
+      if (bgm.paused) {
+        bgm.volume = clampVolume(Math.min(bgm.volume || BGM_RECORDING_VOLUME, targetVolume));
+        bgm.play().then(() => {
+          fadeBgmVolume(targetVolume, BGM_RESTORE_FADE_DURATION_MS);
+        }).catch(() => {});
+        return;
+      }
+
+      fadeBgmVolume(targetVolume, BGM_RESTORE_FADE_DURATION_MS);
+    }, getOutputBlockDelay());
+  };
+
+  const blockAudioOutput = (duration = MIC_RELEASE_COOLDOWN_MS) => {
+    outputBlockedUntilRef.current = Math.max(outputBlockedUntilRef.current, Date.now() + duration);
+  };
+
+  const getAudioElementForUrl = (audioUrl: string) => {
+    const cachedAudio = audioElementsByUrlRef.current.get(audioUrl);
+    if (cachedAudio) return cachedAudio;
+
+    const audio = new Audio(audioUrl);
+    audio.preload = 'auto';
+    audio.volume = NPC_VOICE_VOLUME;
+    audio.load();
+    audioElementsByUrlRef.current.set(audioUrl, audio);
+    return audio;
+  };
+
+  const fallbackSpeakText = (text: string, sessionId = levelSessionRef.current) => {
+    return new Promise<void>((resolve) => {
+      const cleanText = cleanSpeechText(text);
+      if (
+        !cleanText ||
+        !isCurrentLevelSession(sessionId) ||
+        typeof window === 'undefined' ||
+        !window.speechSynthesis
+      ) {
+        resolve();
+        return;
+      }
+
+      void waitForOutputReady().then(async () => {
+        if (!isCurrentLevelSession(sessionId)) {
+          resolve();
+          return;
+        }
+
+        stopActiveSpeech();
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        const selectedVoice = selectConfuciusVoice(await loadSpeechVoices());
+
+        if (!isCurrentLevelSession(sessionId)) {
+          resolve();
+          return;
+        }
+
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
+          utterance.lang = selectedVoice.lang;
+        } else {
+          utterance.lang = 'en-US';
+        }
+
+        utterance.rate = 0.92;
+        utterance.pitch = 0.48;
+        utterance.volume = NPC_VOICE_VOLUME;
+        isNpcSpeakingRef.current = true;
+        fadeBgmVolume(BGM_DUCK_VOLUME);
+        utterance.onend = () => {
+          isNpcSpeakingRef.current = false;
+          if (!isRecordingRef.current && getOutputBlockDelay() === 0) fadeBgmVolume(BGM_IDLE_VOLUME);
+          resolve();
+        };
+        utterance.onerror = () => {
+          isNpcSpeakingRef.current = false;
+          if (!isRecordingRef.current && getOutputBlockDelay() === 0) fadeBgmVolume(BGM_IDLE_VOLUME);
+          resolve();
+        };
+
+        fallbackSpeechRef.current = utterance;
+        window.speechSynthesis.resume();
+        window.speechSynthesis.speak(utterance);
+      });
+    });
+  };
+
+  const playAudioElement = async (audio: HTMLAudioElement, shouldWaitForOutput = true) => {
+    if (shouldWaitForOutput) {
+      await waitForOutputReady();
+    } else if (isRecordingRef.current || getOutputBlockDelay() > 0) {
+      return;
+    }
+
+    stopActiveSpeech();
+    const token = Symbol('speech-playback');
+    activeSpeechTokenRef.current = token;
+
+    audio.pause();
+    audio.currentTime = 0;
+    audio.preload = 'auto';
+    audio.volume = NPC_VOICE_VOLUME;
+    ttsAudioRef.current = audio;
+    activeSpeechAudioRef.current = audio;
+    isNpcSpeakingRef.current = true;
+    fadeBgmVolume(BGM_DUCK_VOLUME);
+
+    await new Promise<void>((resolve) => {
+      const finishPlayback = () => {
+        if (activeSpeechTokenRef.current === token) {
+          activeSpeechTokenRef.current = null;
+          activeSpeechAudioRef.current = null;
+          ttsAudioRef.current = null;
+        }
+        isNpcSpeakingRef.current = false;
+        if (!isRecordingRef.current && getOutputBlockDelay() === 0) fadeBgmVolume(BGM_IDLE_VOLUME);
+        resolve();
+      };
+
+      audio.onended = finishPlayback;
+      audio.onerror = finishPlayback;
+      audio.play().catch(finishPlayback);
+    });
+  };
+
+  const speakText = async (text: string, sessionId = levelSessionRef.current) => {
+    const cleanText = cleanSpeechText(text);
+    if (!cleanText || !isCurrentLevelSession(sessionId)) return;
+
+    await fallbackSpeakText(cleanText, sessionId);
+  };
+
+  const addMessage = (
+    role: 'user' | 'assistant',
+    text: string,
+    isAudio: boolean,
+    audioUrl?: string,
+    sessionId = levelSessionRef.current,
+    options?: { isReport?: boolean },
+  ) => {
+    if (!isCurrentLevelSession(sessionId)) {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      return null;
+    }
+
+    const newMsg: Message = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      role,
+      text,
+      isAudio,
+      audioUrl,
+      duration: Math.min(Math.ceil(text.length / 5), 10) || 3,
+      showTranscript: false,
+      isReport: options?.isReport,
+    };
+
+    if (audioUrl) {
+      preloadedAudioElementsRef.current.set(newMsg.id, getAudioElementForUrl(audioUrl));
+    }
+
+    setMessages((prev) => [...prev, newMsg]);
+    return newMsg;
+  };
+
+  const cancelBgmFade = () => {
+    if (bgmFadeFrameRef.current) {
+      window.cancelAnimationFrame(bgmFadeFrameRef.current);
+      bgmFadeFrameRef.current = null;
+    }
+  };
+
+  const cancelBgmRestore = () => {
+    if (bgmRestoreTimerRef.current) {
+      window.clearTimeout(bgmRestoreTimerRef.current);
+      bgmRestoreTimerRef.current = null;
+    }
+  };
+
+  const fadeBgmVolume = (
+    targetVolume: number,
+    duration = BGM_FADE_DURATION_MS,
+    onComplete?: () => void,
+  ) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    cancelBgmFade();
+
+    const startVolume = audio.volume;
+    const startedAt = performance.now();
+
+    const step = (timestamp: number) => {
+      const progress = Math.min((timestamp - startedAt) / duration, 1);
+      const easedProgress = progress * progress * (3 - 2 * progress);
+      const calculatedVolume = startVolume + (targetVolume - startVolume) * easedProgress;
+      audio.volume = clampVolume(calculatedVolume);
+
+      if (progress >= 1) {
+        bgmFadeFrameRef.current = null;
+        audio.volume = clampVolume(targetVolume);
+        onComplete?.();
+        return;
+      }
+
+      bgmFadeFrameRef.current = window.requestAnimationFrame(step);
+    };
+
+    bgmFadeFrameRef.current = window.requestAnimationFrame(step);
+  };
+
+  const unlockAudio = async () => {
+    audioUnlockedRef.current = true;
+    setAudioUnlocked(true);
+    window.speechSynthesis.resume();
+
+    const AudioContextConstructor =
+      window.AudioContext ||
+      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+    if (AudioContextConstructor && !audioContextRef.current) {
+      audioContextRef.current = new AudioContextConstructor();
+    }
+
+    if (audioContextRef.current?.state === 'suspended') {
+      await audioContextRef.current.resume().catch(() => {});
+    }
+
+    if (audioRef.current) {
+      audioRef.current.volume = BGM_IDLE_VOLUME;
+      await audioRef.current.play().catch(() => {});
+    }
+
+    const pendingOpeningText = pendingOpeningTextRef.current;
+    if (pendingOpeningText) {
+      pendingOpeningTextRef.current = null;
+      void speakText(pendingOpeningText, levelSessionRef.current);
+    }
+  };
+
+  const evaluateRecordedSpeech = async (
+    audioBlob: Blob,
+    referenceText: string,
+    sessionId = levelSessionRef.current,
+  ) => {
+    const cleanReferenceText = referenceText.trim();
+    if (!hasEnglishSpeechText(cleanReferenceText)) {
+      throw new Error('No English speech text was recognized for pronunciation assessment.');
+    }
+
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'recording.wav');
+    formData.append('referenceText', cleanReferenceText);
+
+    const response = await fetch('/api/evaluate-speech', {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!isCurrentLevelSession(sessionId)) return null;
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Xunfei evaluation failed: ${response.status}`);
+    }
+
+    return payload as SpeechEvaluationResult;
+  };
+
+  const { isRecording, startRecording, stopRecording } = useAudioRecorder({
+    releaseDelayMs: MIC_RELEASE_COOLDOWN_MS,
+    onRecorded: async ({ text, audioUrl, evaluationBlob }) => {
+      const sessionId = activeRecordingSessionRef.current;
+      if (!isCurrentLevelSession(sessionId)) {
+        URL.revokeObjectURL(audioUrl);
+        return;
+      }
+
+      setPronunciationError(null);
+      setPronunciationResult(null);
+
+      let spokenText = text.trim();
+      if (!hasEnglishSpeechText(spokenText)) {
+        setPronunciationError('No English speech was recognized. Please hold the button and speak a full English sentence.');
+        URL.revokeObjectURL(audioUrl);
+        return;
+      }
+
+      setIsEvaluatingSpeech(true);
+      try {
+        const evaluation = await evaluateRecordedSpeech(evaluationBlob, spokenText, sessionId);
+        if (!isCurrentLevelSession(sessionId)) {
+          URL.revokeObjectURL(audioUrl);
+          return;
+        }
+
+        if (evaluation) {
+          setPronunciationResult(evaluation);
+          if (hasEnglishSpeechText(evaluation.recognizedText)) {
+            spokenText = evaluation.recognizedText.trim();
+          }
+        }
+      } catch (error) {
+        console.warn('Xunfei speech evaluation failed:', error);
+        if (isCurrentLevelSession(sessionId)) {
+          setPronunciationError(error instanceof Error ? error.message : 'Speech evaluation failed.');
+        }
+      } finally {
+        if (isCurrentLevelSession(sessionId)) {
+          setIsEvaluatingSpeech(false);
+        }
+      }
+
+      if (!isCurrentLevelSession(sessionId)) {
+        URL.revokeObjectURL(audioUrl);
+        return;
+      }
+
+      if (isLevelClearedRef.current) {
+        URL.revokeObjectURL(audioUrl);
+        return;
+      }
+
+      void handleSend(spokenText, true, audioUrl, sessionId);
+    },
+  });
+
+  const handleStartRecording = () => {
+    if (isLevelClearedRef.current) return;
+
+    activeRecordingSessionRef.current = levelSessionRef.current;
+    isRecordingRef.current = true;
+    outputBlockedUntilRef.current = 0;
+    stopNonBgmOutputs();
+    duckBgmForRecording();
+    setPlayingId(null);
+    void startRecording();
+  };
+
+  const handleStopRecording = () => {
+    if (isLevelClearedRef.current) return;
+
+    blockAudioOutput(MIC_RELEASE_COOLDOWN_MS);
+    stopRecording();
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  useEffect(() => {
+    levelSessionRef.current += 1;
+    activeRecordingSessionRef.current = -1;
+    setMessages([]);
+    setInputText('');
+    setInputMode('text');
+    setPlayingId(null);
+    setAudioUnlocked(false);
+    isLevelClearedRef.current = false;
+    setIsAwaitingNpc(false);
+    setIsLevelCleared(false);
+    setPronunciationResult(null);
+    setIsEvaluatingSpeech(false);
+    setPronunciationError(null);
+    audioUnlockedRef.current = false;
+    pendingOpeningTextRef.current = null;
+    stopActiveSpeech();
+    preloadedAudioElementsRef.current.forEach((audio) => audio.pause());
+    preloadedAudioElementsRef.current.clear();
+    audioElementsByUrlRef.current.forEach((audio) => {
+      audio.pause();
+      audio.onended = null;
+      audio.onerror = null;
+    });
+    audioElementsByUrlRef.current.clear();
+    if (openingTimerRef.current) {
+      window.clearTimeout(openingTimerRef.current);
+      openingTimerRef.current = null;
+    }
+    cancelBgmFade();
+    cancelBgmRestore();
+  }, [currentLevel.id]);
+
+  useEffect(() => {
+    if (gameState !== 'start') return;
+
+    if (currentLevelIndex === 0) {
+      setDisplayedNarrative(currentLevel.narrative);
+      setIsNarrativeComplete(true);
+      return;
+    }
+
+    let index = 0;
+    setDisplayedNarrative('');
+    setIsNarrativeComplete(false);
+
+    const timer = window.setInterval(() => {
+      index += 1;
+      setDisplayedNarrative(currentLevel.narrative.slice(0, index));
+
+      if (index >= currentLevel.narrative.length) {
+        window.clearInterval(timer);
+        setIsNarrativeComplete(true);
+      }
+    }, 70);
+
+    return () => window.clearInterval(timer);
+  }, [currentLevel.id, currentLevel.narrative, currentLevelIndex, gameState]);
+
+  useEffect(() => {
+    if (gameState !== 'start' || currentLevelIndex === 0 || !isNarrativeComplete) return;
+
+    const timer = window.setTimeout(() => {
+      handleStart(false);
+    }, 3000);
+
+    return () => window.clearTimeout(timer);
+  }, [currentLevelIndex, gameState, isNarrativeComplete]);
+
+  useEffect(() => {
+    if (
+      gameState === 'game' &&
+      taskStatus.length > 0 &&
+      taskStatus.every(Boolean) &&
+      !isAwaitingNpc
+    ) {
+      isLevelClearedRef.current = true;
+      setIsLevelCleared(true);
+    }
+  }, [gameState, isAwaitingNpc, taskStatus]);
+
+  useEffect(() => {
+    return () => {
+      stopActiveSpeech();
+      preloadedAudioElementsRef.current.forEach((audio) => audio.pause());
+      audioElementsByUrlRef.current.forEach((audio) => audio.pause());
+      if (openingTimerRef.current) window.clearTimeout(openingTimerRef.current);
+      cancelBgmFade();
+      cancelBgmRestore();
+    };
   }, []);
 
-  const handleStart = () => {
-    setGameState('intro-video');
-    if (audioRef.current) {
-        audioRef.current.volume = 0.05; 
-        audioRef.current.play().catch(() => {});
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+    const bgm = audioRef.current;
+    if (!bgm) return;
+
+    if (isRecording) {
+      duckBgmForRecording();
+      return;
     }
+
+    scheduleBgmRestore();
+  }, [isRecording]);
+
+  const handleStart = (shouldUnlockAudio = false) => {
+    if (shouldUnlockAudio) {
+      void unlockAudio();
+    }
+
+    setGameState('map-transition');
+    if (audioRef.current) {
+      audioRef.current.volume = BGM_IDLE_VOLUME;
+      audioRef.current.play().catch(() => {});
+    }
+  };
+
+  const handleMapTransitionComplete = () => {
+    setGameState('intro-video');
   };
 
   const handleVideoEnd = () => {
     if (gameState === 'intro-video') {
       setGameState('game');
-      // ★★★ 核心修复：直接在前端伪造第一句，不调用API，确保100%成功 ★★★
-      const introText = "Welcome, traveler. Is it the chaos of the world that drives you here?";
-      setTimeout(() => {
-          addMessage('assistant', introText, true, undefined);
-          // 顺便让它自动朗读一下，增加真实感
-          speakText(introText);
+      const introText = currentLevel.initialGreeting;
+      const sessionId = levelSessionRef.current;
+
+      openingTimerRef.current = window.setTimeout(() => {
+        if (!isCurrentLevelSession(sessionId)) {
+          openingTimerRef.current = null;
+          return;
+        }
+
+        addMessage('assistant', introText, true, undefined, sessionId);
+        if (audioUnlockedRef.current) {
+          void speakText(introText, sessionId);
+        } else {
+          pendingOpeningTextRef.current = introText;
+        }
+        openingTimerRef.current = null;
       }, 1000);
     } else if (gameState === 'end-video') {
-      setGameState('level-2');
+      levelSessionRef.current += 1;
+      goToNextLevel();
     }
   };
 
-  const addMessage = (role: 'user' | 'assistant', text: string, isAudio: boolean, audioUrl?: string) => {
-    const newMsg: Message = {
-        id: Date.now(),
-        role,
-        text,
-        isAudio,
-        audioUrl,
-        duration: Math.min(Math.ceil(text.length / 5), 10) || 3,
-        showTranscript: false
-    };
-    setMessages(prev => [...prev, newMsg]);
-    
-    // 如果是NPC回复（非第一句，因为第一句在handleVideoEnd里手动读了），自动朗读
-    if (role === 'assistant' && isAudio && !text.includes("###") && messages.length > 0) { 
-        speakText(text);
-    }
-    return newMsg;
-  };
+  const handlePlayFinalVideo = () => {
+    if (!isLevelClearedRef.current) return;
 
-  const speakText = (text: string) => {
-    window.speechSynthesis.cancel();
-    const cleanText = text.replace(/\*.*?\*/g, '').replace(/\(.*?\)/g, '').trim();
-    if (!cleanText) return;
-
-    const u = new SpeechSynthesisUtterance(cleanText);
-    u.lang = 'en-US';
-    u.rate = 0.65; 
-    u.pitch = 0.5; 
-    
-    const voices = window.speechSynthesis.getVoices();
-    const maleVoice = voices.find(v => v.name.includes('Google US English') || v.name.includes('David'));
-    if (maleVoice) u.voice = maleVoice;
-    
-    window.speechSynthesis.speak(u);
+    stopNonBgmOutputs();
+    setInputText('');
+    setInputMode('text');
+    setPlayingId(null);
+    setGameState('end-video');
   };
 
   const playBubble = (msg: Message) => {
     setPlayingId(msg.id);
+
     if (msg.role === 'user' && msg.audioUrl) {
-        const userAudio = new Audio(msg.audioUrl);
-        userAudio.play();
-        userAudio.onended = () => setPlayingId(null);
-    } else {
-        speakText(msg.text);
-        setTimeout(() => setPlayingId(null), (msg.duration || 3) * 1000);
+      const userAudio = preloadedAudioElementsRef.current.get(msg.id) || getAudioElementForUrl(msg.audioUrl);
+      void playAudioElement(userAudio, false).finally(() => setPlayingId(null));
+      return;
+    }
+
+    if (msg.audioUrl) {
+      const npcAudio = preloadedAudioElementsRef.current.get(msg.id) || getAudioElementForUrl(msg.audioUrl);
+      void playAudioElement(npcAudio, false).finally(() => setPlayingId(null));
+      return;
+    }
+
+    void fallbackSpeakText(msg.text).finally(() => setPlayingId(null));
+  };
+
+  const generateReport = async (sessionId = levelSessionRef.current) => {
+    if (!isCurrentLevelSession(sessionId)) return;
+
+    const userText = messages.filter((message) => message.role === 'user').map((message) => message.text).join('\n');
+    addMessage('assistant', '📝 正在生成您的口语纠正报告...', false, undefined, sessionId);
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: `[SYSTEM_REPORT_MODE] ${userText}`, history: [] }),
+      });
+      if (!res.ok) {
+        throw new Error(`Report request failed: ${res.status}`);
+      }
+      const data = await res.json();
+      if (!isCurrentLevelSession(sessionId)) return;
+      addMessage('assistant', data.reply, false, undefined, sessionId, { isReport: true });
+    } catch (error) {
+      console.error('Report generation failed:', error);
+      addMessage('assistant', '报告生成失败 (API Error)', false, undefined, sessionId);
     }
   };
 
-  const startRec = async () => {
-    transcriptRef.current = "";
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const recorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = recorder;
-        audioChunksRef.current = [];
-        recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-        recorder.start();
-        recognitionRef.current?.start();
-        setIsRecording(true);
-    } catch (e) {
-        console.warn("Mic busy, forcing reset");
-        setIsRecording(true); // 假装成功防止红屏
+  const handleSend = async (
+    text: string,
+    asAudio: boolean,
+    audioUrl?: string,
+    sessionId = levelSessionRef.current,
+  ) => {
+    if (isLevelClearedRef.current || !text.trim() || !isCurrentLevelSession(sessionId)) {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      return;
     }
-  };
-  
-  const stopRec = () => {
-    if (!isRecording) return;
-    try {
-        recognitionRef.current?.stop();
-        mediaRecorderRef.current?.stop();
-        setIsRecording(false);
-        
-        if (mediaRecorderRef.current) {
-            mediaRecorderRef.current.onstop = () => {
-                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/mp3' });
-                const audioUrl = URL.createObjectURL(audioBlob);
-                setTimeout(() => {
-                    const text = transcriptRef.current.trim() || "(Sound recorded)";
-                    handleSend(text, true, audioUrl);
-                }, 500);
-            };
-        }
-    } catch(e) { console.warn(e); setIsRecording(false); }
-  };
 
-  const generateReport = async () => {
-    const userText = messages.filter(m => m.role === 'user').map(m => m.text).join("\n");
-    addMessage('assistant', "📝 正在生成您的口语纠正报告...", false, undefined);
-
-    try {
-        const res = await fetch('/api/chat', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ message: "[SYSTEM_REPORT_MODE] " + userText, history: [] })
-        });
-        const data = await res.json();
-        addMessage('assistant', data.reply, false, undefined);
-    } catch(e) {
-        addMessage('assistant', "报告生成失败 (API Error)", false, undefined);
-    }
-  };
-  const handleSend = async (text: string, asAudio: boolean, audioUrl?: string) => {
-    if (!text) return;
-    setInputText("");
+    setInputText('');
 
     if (text.trim().toLowerCase() === 'test') {
-        setTaskStatus([true, true, true]);
-        await generateReport();
-        return;
+      completeAllTasks();
+      await generateReport(sessionId);
+      return;
     }
 
-    addMessage('user', text, asAudio, audioUrl);
+    const userMessage = addMessage('user', text, asAudio, audioUrl, sessionId);
+    if (!userMessage) return;
+
+    setIsAwaitingNpc(true);
+    const nextHistory = [...messages, userMessage];
 
     try {
-        const res = await fetch('/api/chat', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ message: text, history: messages }) 
+      void fetch('/api/validate-tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ levelId: currentLevel.id, history: nextHistory }),
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Task validator request failed: ${response.status}`);
+          }
+
+          const validation = await response.json() as TaskValidationResult;
+          if (isCurrentLevelSession(sessionId)) {
+            applyTaskValidation(validation);
+          }
+        })
+        .catch((error) => {
+          console.warn('Task validator request failed:', error);
         });
-        
-        // 1. 接收后端传来的 JSON 结构化数据包
-        const data = await res.json();
-        
-        // 解析数据（对应我们在 route.ts 里定义的字段）
-        const reply = data.reply || "";
-        const isCompleted = data.isTaskCompleted;
-        const emotion = data.emotion;
 
-        // 2. 将 NPC 的回复显示在聊天框并自动朗读
-        if (reply) {
-            addMessage('assistant', reply, true, undefined);
-        }
+      const chatResponse = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, history: messages, levelId: currentLevel.id }),
+      });
 
-        // 3. 【核心机制】任务顺序解锁逻辑
-        if (isCompleted) {
-            setTaskStatus(prev => {
-                const newStatus = [...prev];
-                // 找到当前 taskStatus 数组里第一个为 false（未完成）的任务下标
-                const nextUnfinishedIndex = newStatus.indexOf(false); 
-                
-                if (nextUnfinishedIndex !== -1) {
-                    newStatus[nextUnfinishedIndex] = true; // 勾选该任务
-                    
-                    // 可以在浏览器控制台看看 AI 的情绪反馈
-                    console.log(`🎉 任务 ${nextUnfinishedIndex + 1} 完成！老子当前情绪：${emotion}`);
-                    
-                    // 如果发现刚刚完成的是最后一个任务（索引为 2），则触发关卡结束逻辑
-                    if (nextUnfinishedIndex === 2) {
-                        // 延迟 5 秒让玩家看完最后一句对话，然后播放结尾视频
-                        setTimeout(() => setGameState('end-video'), 5000); 
-                    }
-                }
-                return newStatus;
-            });
-        }
+      if (!isCurrentLevelSession(sessionId)) return;
 
-    } catch (e) {
-        console.error("API 请求失败:", e);
-        addMessage('assistant', "The connection is unstable, like ripples in a pond... (API Error)", true, undefined);
+      if (!chatResponse.ok) {
+        throw new Error(`Chat request failed: ${chatResponse.status}`);
+      }
+
+      const data = await chatResponse.json();
+      const reply = data.reply || '';
+
+      if (reply) {
+        addMessage('assistant', reply, true, undefined, sessionId);
+        void speakText(reply, sessionId);
+      }
+    } catch (error) {
+      console.error('API 请求失败:', error);
+      if (!isCurrentLevelSession(sessionId)) return;
+      const fallbackText = 'The connection is unstable, like ripples in a pond... (API Error)';
+      addMessage('assistant', fallbackText, true, undefined, sessionId);
+      void speakText(fallbackText, sessionId);
+    } finally {
+      if (isCurrentLevelSession(sessionId)) {
+        setIsAwaitingNpc(false);
+      }
     }
   };
+
   return (
-    <Page>
-      <audio ref={audioRef} loop src="/assets/level-1/music-theme.mp3" />
-      <BackgroundLayer $blur={gameState === 'start'} />
+    <MediaPlaybackProvider bgmRef={audioRef}>
+      <Page>
+        <audio ref={audioRef} loop src={currentLevel.media.bgm} />
+        <BackgroundLayer $blur={gameState === 'start'} $image={currentLevel.media.background} />
 
-      {gameState === 'start' && (
-        <IntroOverlay>
-            <IntroText>
-              In the middle of the Spring and Autumn Period, rituals collapsed. <br/><br/>
-              Confucius, with the ambition of benevolent governance, traveled to Luoyang...
-            </IntroText>
-            <StartButton onClick={handleStart}>BEGIN JOURNEY</StartButton>
-        </IntroOverlay>
-      )}
+        {gameState === 'start' && (
+          <IntroOverlay>
+            <IntroText>{renderNarrative(displayedNarrative)}</IntroText>
+            <StartButton onClick={() => handleStart(true)}>BEGIN JOURNEY</StartButton>
+          </IntroOverlay>
+        )}
 
-      {(gameState === 'intro-video' || gameState === 'end-video') && (
-        <VideoOverlay>
-            <FullScreenVideo 
-                autoPlay 
-                src={gameState === 'intro-video' ? "/assets/level-1/video-intro.mp4" : "/assets/level-1/video-end.mp4"}
-                onEnded={handleVideoEnd}
+        {gameState === 'map-transition' && (
+          <MapTransition
+            mapData={currentLevel.mapData}
+            onComplete={handleMapTransitionComplete}
+          />
+        )}
+
+        {(gameState === 'intro-video' || gameState === 'end-video') && (
+          <VideoOverlay>
+            <ManagedFullScreenVideo
+              src={gameState === 'intro-video' ? currentLevel.media.video : currentLevel.media.outroVideo}
+              onEnded={handleVideoEnd}
             />
-            <button onClick={handleVideoEnd} style={{position:'absolute', top:30, right:30, zIndex:31, background:'transparent', color:'#fbbf24', border:'1px solid #fbbf24', padding:'5px 15px'}}>Skip</button>
-        </VideoOverlay>
-      )}
+            <button
+              onClick={handleVideoEnd}
+              style={{
+                position: 'absolute',
+                top: 30,
+                right: 30,
+                zIndex: 31,
+                background: 'transparent',
+                color: '#fbbf24',
+                border: '1px solid #fbbf24',
+                padding: '5px 15px',
+              }}
+            >
+              Skip
+            </button>
+          </VideoOverlay>
+        )}
 
-      {gameState === 'game' && (
-        <>
+        {gameState === 'game' && (
+          <>
             <LeftSection>
-                <ChatWindow>
-                    {messages.map(msg => (
-                        <MessageRow key={msg.id} $isUser={msg.role === 'user'}>
-                            {msg.role === 'assistant' && <Avatar $isUser={false}>L</Avatar>}
-                            
-                            <MessageContent style={{alignItems: msg.role==='user'?'flex-end':'flex-start'}}>
-                                <div style={{display:'flex', gap:'5px', alignItems:'center'}}>
-                                    
-                                    {msg.isAudio ? (
-                                        <>
-                                            <AudioBubble 
-                                                $isUser={msg.role === 'user'}
-                                                $playing={playingId === msg.id}
-                                                onClick={() => playBubble(msg)}
-                                            >
-                                                <span className="wave-icon">
-                                                    {msg.role === 'user' ? '((•))' : '🔊'}
-                                                </span>
-                                                <span>{msg.duration}"</span>
-                                            </AudioBubble>
-                                            
-                                            <ConvertBtn onClick={() => {
-                                                setMessages(prev => prev.map(m => m.id===msg.id ? {...m, showTranscript:!m.showTranscript} : m));
-                                            }}>
-                                                {msg.showTranscript ? 'Hide' : 'A→文'}
-                                            </ConvertBtn>
-                                        </>
-                                    ) : (
-                                        <TextBubble dangerouslySetInnerHTML={{ 
-                                            __html: msg.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') 
-                                        }} />
-                                    )}
-                                </div>
-                                {msg.showTranscript && <TranscriptText>{msg.text}</TranscriptText>}
-                            </MessageContent>
+              <ChatWindow
+                messages={messages}
+                npcAvatarLabel={currentLevel.npcAvatarLabel}
+                playingId={playingId}
+                chatEndRef={chatEndRef}
+                onPlayMessage={playBubble}
+                onToggleTranscript={(messageId) => {
+                  setMessages((prev) => prev.map((message) => (
+                    message.id === messageId
+                      ? { ...message, showTranscript: !message.showTranscript }
+                      : message
+                  )));
+                }}
+              />
 
-                            {msg.role === 'user' && <Avatar $isUser={true}>Me</Avatar>}
-                        </MessageRow>
-                    ))}
-                    <div ref={chatEndRef} />
-                </ChatWindow>
+              <PronunciationFeedback
+                result={pronunciationResult}
+                isLoading={isEvaluatingSpeech}
+                error={pronunciationError}
+              />
 
-                <BottomPanel>
-                    <HintKeywords>
-                        <span>🔑 Keywords:</span>
-                        <Keyword>Tao</Keyword>
-                        <Keyword>Benevolence</Keyword>
-                    </HintKeywords>
-
-                    <InputGroup>
-                        <SwitchModeBtn onClick={() => setInputMode(prev => prev === 'text' ? 'voice' : 'text')}>
-                            {inputMode === 'text' ? '🎙️' : '⌨️'}
-                        </SwitchModeBtn>
-
-                        {inputMode === 'text' ? (
-                            <TextInput 
-                                placeholder="Type 'test' to finish..." 
-                                value={inputText}
-                                onChange={e => setInputText(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && handleSend(inputText, false)}
-                            />
-                        ) : (
-                            <VoiceHoldBtn 
-                                $recording={isRecording}
-                                onMouseDown={startRec}
-                                onMouseUp={stopRec}
-                                onMouseLeave={stopRec}
-                            >
-                                {isRecording ? "Listening..." : "Hold to Speak"}
-                            </VoiceHoldBtn>
-                        )}
-
-                        {inputMode === 'text' && (
-                            <SendButton onClick={() => handleSend(inputText, false)}>Send</SendButton>
-                        )}
-                    </InputGroup>
-                </BottomPanel>
+              <AudioRecorder
+                hints={currentLevel.hints}
+                inputMode={inputMode}
+                inputText={inputText}
+                isRecording={isRecording}
+                completionSummary={isLevelCleared ? currentLevel.completionSummary : undefined}
+                onInputModeChange={setInputMode}
+                onInputTextChange={setInputText}
+                onSendText={() => void handleSend(inputText, false)}
+                onStartRecording={handleStartRecording}
+                onStopRecording={handleStopRecording}
+                onPlayFinalVideo={handlePlayFinalVideo}
+              />
             </LeftSection>
 
-            <RightSection>
-                <Header>The Way of Tao</Header>
-                <TaskList>
-                    <TaskItem $done={taskStatus[0]}>Greeting the Master</TaskItem>
-                    <TaskItem $done={taskStatus[1]}>Discussing Benevolence</TaskItem>
-                    <TaskItem $done={taskStatus[2]}>Farewell to Lu</TaskItem>
-                </TaskList>
-            </RightSection>
-        </>
-      )}
-    </Page>
+            <TaskPanel
+              title={currentLevel.displayTitle}
+              tasks={currentLevel.tasks}
+              taskStatus={taskStatus}
+            />
+
+            {!audioUnlocked && (
+              <IntroOverlay>
+                <IntroText>Click to start this level.</IntroText>
+                <StartButton onClick={() => void unlockAudio()}>CLICK TO START</StartButton>
+              </IntroOverlay>
+            )}
+          </>
+        )}
+      </Page>
+    </MediaPlaybackProvider>
   );
 };
 
-export default Main;
+export default function PageRoot() {
+  return (
+    <LevelManagerProvider>
+      <Main />
+    </LevelManagerProvider>
+  );
+}
