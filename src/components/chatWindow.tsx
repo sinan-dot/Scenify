@@ -178,10 +178,7 @@ export function ChatWindow({
                   <AudioBubble
                     $isUser={msg.role === 'user'}
                     $playing={playingId === msg.id}
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      onPlayMessage(msg);
-                    }}
+                    onClick={() => onPlayMessage(msg)}
                   >
                     <span className="wave-icon">{msg.role === 'user' ? '((•))' : '🔊'}</span>
                     <span>{msg.duration}"</span>

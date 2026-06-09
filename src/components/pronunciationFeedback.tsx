@@ -70,11 +70,50 @@ const Detail = styled.div`
   font-size: 0.78rem;
 `;
 
+const SuggestionList = styled.ul`
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #e5e7eb;
+  font-size: 0.82rem;
+  line-height: 1.6;
+
+  li + li {
+    margin-top: 4px;
+  }
+`;
+
 function scoreTone(score: number | null | undefined): 'good' | 'fair' | 'weak' {
   if (typeof score !== 'number') return 'fair';
   if (score >= 80) return 'good';
   if (score >= 60) return 'fair';
   return 'weak';
+}
+
+function buildSuggestions(result: SpeechEvaluationResult) {
+  const suggestions: string[] = [];
+  const weakWords = result.words.filter((word) => typeof word.score === 'number' && word.score < 60);
+
+  if (typeof result.scores.accuracy === 'number' && result.scores.accuracy < 70) {
+    suggestions.push('优先慢速跟读整句，先保证每个单词发音清楚，再逐步提速。');
+  }
+
+  if (typeof result.scores.fluency === 'number' && result.scores.fluency < 70) {
+    suggestions.push('把句子按意群分段练习，先停顿清楚，再练连接和连读。');
+  }
+
+  if (typeof result.scores.standard === 'number' && result.scores.standard < 70) {
+    suggestions.push('重点检查重音位置和元音饱满度，避免把关键词读得过快或过轻。');
+  }
+
+  if (weakWords.length > 0) {
+    suggestions.push(`优先复练这些薄弱词：${weakWords.slice(0, 5).map((word) => word.text).filter(Boolean).join(' / ')}。`);
+  }
+
+  if (suggestions.length === 0) {
+    suggestions.push('整体表现稳定，下一步可以尝试更长句表达，并继续保持节奏和重音。');
+  }
+
+  return suggestions.slice(0, 3);
 }
 
 export function PronunciationFeedback({
@@ -114,6 +153,7 @@ export function PronunciationFeedback({
     score: null,
   }));
   const words = result.words.length > 0 ? result.words : fallbackWords;
+  const suggestions = buildSuggestions(result);
 
   return (
     <Panel>
@@ -142,6 +182,12 @@ export function PronunciationFeedback({
         Accuracy {result.scores.accuracy ?? '--'} · Fluency {result.scores.fluency ?? '--'} ·
         Standard {result.scores.standard ?? '--'} · Integrity {result.scores.integrity ?? '--'}
       </Detail>
+
+      <SuggestionList>
+        {suggestions.map((suggestion) => (
+          <li key={suggestion}>{suggestion}</li>
+        ))}
+      </SuggestionList>
     </Panel>
   );
 }

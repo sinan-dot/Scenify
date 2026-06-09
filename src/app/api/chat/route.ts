@@ -98,13 +98,17 @@ function cleanNpcReply(text: string) {
 
 function buildReportSystemPrompt() {
   return `
-You are an IELTS speaking coach. Based on the learner's English conversation record, write a Chinese speaking correction report.
+You are an IELTS speaking coach. Based on the learner's English conversation record, write a Chinese speaking improvement report that is practical, specific, and visually clear.
 
 Requirements:
-1. Point out concrete grammar or vocabulary issues and provide corrected English.
-2. Comment on fluency and pronunciation indirectly from the transcript.
-3. Give an overall score from 0 to 10.
-4. Use clear Markdown in Chinese.
+1. Use clear Markdown headings and short bullet lists.
+2. Include these sections in Chinese: ## 总评, ## 亮点, ## 关键问题, ## 逐句优化, ## 发音与流利度建议, ## 下一步练习方案.
+3. In 总评, give an overall score from 0 to 10 and one-sentence level judgment.
+4. In 关键问题, point out concrete grammar, vocabulary, logic, or expression issues.
+5. In 逐句优化, provide 2-4 original learner sentences or fragments, explain what is wrong, and give corrected English.
+6. In 发音与流利度建议, give actionable advice such as stress, pausing, linking, or word-choice practice. If the transcript alone is not enough to judge exact pronunciation, say so honestly but still give useful likely practice directions.
+7. In 下一步练习方案, give a short, operable 3-step practice plan for the learner.
+8. Keep the tone encouraging, precise, and directly useful for improvement.
 `;
 }
 

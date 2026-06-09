@@ -6,7 +6,8 @@ type RecordedAudioPayload = {
   text: string;
   audioUrl: string;
   audioBlob: Blob;
-  evaluationBlob: Blob;
+  evaluationBlob: Blob | null;
+  speechRecognitionError: string | null;
 };
 
 type UseAudioRecorderOptions = {
@@ -14,6 +15,13 @@ type UseAudioRecorderOptions = {
   releaseDelayMs?: number;
   onRecorded: (payload: RecordedAudioPayload) => void;
 };
+
+const NON_FATAL_RECOGNITION_ERRORS = new Set([
+  'no-speech',
+  'aborted',
+  'network',
+  'audio-capture',
+]);
 
 type BrowserSpeechRecognition = {
   lang: string;
@@ -47,22 +55,6 @@ function getBestTranscript(finalTranscript: string, interimTranscript: string) {
   return `${finalTranscript} ${interimTranscript}`
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-async function transcribeWithServer(audioBlob: Blob, language: string) {
-  const formData = new FormData();
-  formData.append('audio', audioBlob, 'recording.webm');
-  formData.append('language', language);
-
-  const response = await fetch('/api/stt', {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) return '';
-
-  const data = await response.json();
-  return typeof data.text === 'string' ? data.text.trim() : '';
 }
 
 function writeString(view: DataView, offset: number, value: string) {
@@ -99,9 +91,15 @@ function encodePcmWav(samples: Float32Array, sampleRate: number) {
 }
 
 async function convertTo16KhzMonoWav(audioBlob: Blob) {
+  console.log('[Recorder] Starting WAV conversion', {
+    sourceType: audioBlob.type,
+    sourceSize: audioBlob.size,
+  });
+
   const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
   if (!AudioContextConstructor || typeof OfflineAudioContext === 'undefined') {
-    return audioBlob;
+    console.error('[Recorder] AudioContext or OfflineAudioContext unavailable for WAV conversion');
+    return null;
   }
 
   const decodeContext = new AudioContextConstructor();
@@ -116,9 +114,19 @@ async function convertTo16KhzMonoWav(audioBlob: Blob) {
     source.start(0);
 
     const renderedBuffer = await offlineContext.startRendering();
-    return new Blob([encodePcmWav(renderedBuffer.getChannelData(0), sampleRate)], {
+    const wavBlob = new Blob([encodePcmWav(renderedBuffer.getChannelData(0), sampleRate)], {
       type: 'audio/wav; codecs=audio/pcm; samplerate=16000',
     });
+
+    console.log('[Recorder] WAV conversion completed', {
+      targetType: wavBlob.type,
+      targetSize: wavBlob.size,
+      sampleRate,
+      channels: 1,
+      bitsPerSample: 16,
+    });
+
+    return wavBlob;
   } finally {
     await decodeContext.close().catch(() => {});
   }
@@ -130,6 +138,10 @@ export function useAudioRecorder({
   onRecorded,
 }: UseAudioRecorderOptions) {
   const [isRecording, setIsRecording] = useState(false);
+  const [isSpeechRecognitionSupported, setIsSpeechRecognitionSupported] = useState(false);
+  const [speechRecognitionError, setSpeechRecognitionError] = useState<string | null>(null);
+  const [liveTranscript, setLiveTranscript] = useState('');
+  const [recognitionState, setRecognitionState] = useState<'idle' | 'listening' | 'restarting' | 'error'>('idle');
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const transcriptRef = useRef('');
   const interimTranscriptRef = useRef('');
@@ -138,6 +150,7 @@ export function useAudioRecorder({
   const audioChunksRef = useRef<Blob[]>([]);
   const isRecordingRef = useRef(false);
   const recognitionEndResolverRef = useRef<(() => void) | null>(null);
+  const shouldKeepRecognitionAliveRef = useRef(false);
 
   const stopLocalMicTracks = () => {
     localStreamRef.current?.getTracks().forEach((track) => {
@@ -148,6 +161,7 @@ export function useAudioRecorder({
 
   useEffect(() => {
     const SpeechRecognition = getSpeechRecognitionConstructor();
+    setIsSpeechRecognitionSupported(Boolean(SpeechRecognition));
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
@@ -170,13 +184,38 @@ export function useAudioRecorder({
 
       if (finalTranscript) transcriptRef.current += `${finalTranscript} `;
       interimTranscriptRef.current = interimTranscript;
+      setLiveTranscript(getBestTranscript(transcriptRef.current, interimTranscriptRef.current));
+      if (finalTranscript || interimTranscript) {
+        setSpeechRecognitionError(null);
+        setRecognitionState('listening');
+      }
     };
     recognition.onerror = (event: any) => {
-      console.warn('SpeechRecognition error:', event?.error || event);
+      const errorCode = String(event?.error || 'unknown');
+      console.warn('SpeechRecognition error:', errorCode);
+      setSpeechRecognitionError(errorCode);
+      setRecognitionState('error');
     };
     recognition.onend = () => {
-      recognitionEndResolverRef.current?.();
+      const resolver = recognitionEndResolverRef.current;
       recognitionEndResolverRef.current = null;
+      resolver?.();
+
+      if (shouldKeepRecognitionAliveRef.current && isRecordingRef.current) {
+        setRecognitionState('restarting');
+        try {
+          recognition.start();
+          setRecognitionState('listening');
+        } catch (error) {
+          console.warn('SpeechRecognition restart failed:', error);
+          setRecognitionState('error');
+        }
+        return;
+      }
+
+      if (!isRecordingRef.current) {
+        setRecognitionState('idle');
+      }
     };
 
     recognitionRef.current = recognition;
@@ -204,7 +243,11 @@ export function useAudioRecorder({
     if (isRecordingRef.current) return;
 
     isRecordingRef.current = true;
+    shouldKeepRecognitionAliveRef.current = true;
     setIsRecording(true);
+    setSpeechRecognitionError(null);
+    setLiveTranscript('');
+    setRecognitionState(isSpeechRecognitionSupported ? 'listening' : 'idle');
     transcriptRef.current = '';
     interimTranscriptRef.current = '';
     recognitionEndResolverRef.current = null;
@@ -269,7 +312,9 @@ export function useAudioRecorder({
     if (!isRecordingRef.current) return;
 
     isRecordingRef.current = false;
+    shouldKeepRecognitionAliveRef.current = false;
     setIsRecording(false);
+    setRecognitionState('idle');
 
     try {
       const recognitionEndPromise = new Promise<void>((resolve) => {
@@ -311,23 +356,19 @@ export function useAudioRecorder({
         await recognitionEndPromise;
 
         let text = getBestTranscript(transcriptRef.current, interimTranscriptRef.current);
-        let evaluationBlob = audioBlob;
+        let evaluationBlob: Blob | null = null;
 
         mediaRecorderRef.current = null;
 
         try {
           evaluationBlob = await convertTo16KhzMonoWav(audioBlob);
         } catch (error) {
-          console.warn('16kHz WAV conversion failed, using original recording:', error);
+          console.warn('16kHz WAV conversion failed:', error);
         }
 
-        if (!text) {
-          try {
-            text = await transcribeWithServer(audioBlob, language);
-          } catch (error) {
-            console.warn('Server STT fallback failed:', error);
-          }
-        }
+        const resolvedRecognitionError = speechRecognitionError && !NON_FATAL_RECOGNITION_ERRORS.has(speechRecognitionError)
+          ? speechRecognitionError
+          : null;
 
         window.setTimeout(() => {
           onRecorded({
@@ -335,6 +376,7 @@ export function useAudioRecorder({
             audioUrl,
             audioBlob,
             evaluationBlob,
+            speechRecognitionError: resolvedRecognitionError,
           });
         }, releaseDelayMs);
       };
@@ -355,6 +397,10 @@ export function useAudioRecorder({
 
   return {
     isRecording,
+    isSpeechRecognitionSupported,
+    speechRecognitionError,
+    liveTranscript,
+    recognitionState,
     startRecording,
     stopRecording,
   };

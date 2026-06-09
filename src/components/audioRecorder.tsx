@@ -9,6 +9,10 @@ type AudioRecorderProps = {
   inputMode: 'text' | 'voice';
   inputText: string;
   isRecording: boolean;
+  isSpeechRecognitionSupported?: boolean;
+  recognitionState?: 'idle' | 'listening' | 'restarting' | 'error';
+  liveTranscript?: string;
+  speechRecognitionError?: string | null;
   completionSummary?: string;
   onInputModeChange: (mode: 'text' | 'voice') => void;
   onInputTextChange: (text: string) => void;
@@ -128,11 +132,77 @@ const CompletionButton = styled.button`
   }
 `;
 
+const RecognitionStatus = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.26);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.84);
+`;
+
+const RecognitionHeader = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  font-size: 0.82rem;
+`;
+
+const RecognitionBadge = styled.span<{ $tone: 'good' | 'warn' | 'bad' }>`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  background: ${(props) => props.$tone === 'good'
+    ? 'rgba(22, 163, 74, 0.18)'
+    : props.$tone === 'warn'
+      ? 'rgba(217, 119, 6, 0.18)'
+      : 'rgba(220, 38, 38, 0.18)'};
+  color: ${(props) => props.$tone === 'good'
+    ? '#bbf7d0'
+    : props.$tone === 'warn'
+      ? '#fde68a'
+      : '#fecaca'};
+  border: 1px solid ${(props) => props.$tone === 'good'
+    ? 'rgba(134, 239, 172, 0.28)'
+    : props.$tone === 'warn'
+      ? 'rgba(253, 230, 138, 0.28)'
+      : 'rgba(252, 165, 165, 0.3)'};
+`;
+
+const RecognitionMeta = styled.span`
+  color: rgba(255, 255, 255, 0.66);
+`;
+
+const TranscriptPreview = styled.div`
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: #f8fafc;
+  min-height: 1.4em;
+`;
+
+const RecognitionErrorText = styled.div`
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #fecaca;
+`;
+
 export function AudioRecorder({
   hints,
   inputMode,
   inputText,
   isRecording,
+  isSpeechRecognitionSupported = true,
+  recognitionState = 'idle',
+  liveTranscript = '',
+  speechRecognitionError = null,
   completionSummary,
   onInputModeChange,
   onInputTextChange,
@@ -195,6 +265,43 @@ export function AudioRecorder({
           <SendButton onClick={onSendText}>Send</SendButton>
         )}
       </InputGroup>
+
+      {inputMode === 'voice' && (
+        <RecognitionStatus>
+          <RecognitionHeader>
+            <RecognitionBadge $tone={
+              !isSpeechRecognitionSupported
+                ? 'bad'
+                : recognitionState === 'listening'
+                  ? 'good'
+                  : recognitionState === 'restarting'
+                    ? 'warn'
+                    : recognitionState === 'error'
+                      ? 'bad'
+                      : 'warn'
+            }>
+              {!isSpeechRecognitionSupported
+                ? 'Native STT Unsupported'
+                : recognitionState === 'listening'
+                  ? 'Native STT Listening'
+                  : recognitionState === 'restarting'
+                    ? 'Native STT Restarting'
+                    : recognitionState === 'error'
+                      ? 'Native STT Error'
+                      : 'Native STT Idle'}
+            </RecognitionBadge>
+            <RecognitionMeta>Language: en-US</RecognitionMeta>
+          </RecognitionHeader>
+
+          <TranscriptPreview>
+            {liveTranscript || (isRecording ? 'Waiting for browser transcript...' : 'Hold to speak and watch the live transcript here.')}
+          </TranscriptPreview>
+
+          {speechRecognitionError && (
+            <RecognitionErrorText>{speechRecognitionError}</RecognitionErrorText>
+          )}
+        </RecognitionStatus>
+      )}
     </BottomPanel>
   );
 }

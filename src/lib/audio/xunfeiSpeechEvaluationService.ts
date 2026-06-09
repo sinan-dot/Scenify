@@ -94,7 +94,7 @@ function extractWords(parsedXml: unknown): PronunciationWordResult[] {
   return findNodesByName(parsedXml, 'word')
     .map((word) => {
       const text = String(
-        getAttr(word, ['content', 'text', 'word', 'name', 'beg_pos']) ?? '',
+        getAttr(word, ['content', 'text', 'word', 'name', 'recognizedText', 'rec_text']) ?? '',
       ).trim();
       const score = toNumber(getScoreValue(word, ['total_score', 'phone_score', 'accuracy_score']));
       const errorType = getAttr(word, ['werr_msg', 'serr_msg', 'except_info']);
@@ -114,13 +114,48 @@ function extractWords(parsedXml: unknown): PronunciationWordResult[] {
     .filter((word) => word.text || word.score !== null || word.errorType);
 }
 
+function collectTextCandidates(root: unknown, keys: string[]) {
+  const results = new Set<string>();
+
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    const object = value as Record<string, unknown>;
+    for (const [key, child] of Object.entries(object)) {
+      if (keys.includes(key) || keys.includes(key.replace(/^@_/, ''))) {
+        const text = String(child ?? '').replace(/\s+/g, ' ').trim();
+        if (/[A-Za-z]/.test(text)) {
+          results.add(text);
+        }
+      }
+      visit(child);
+    }
+  };
+
+  visit(root);
+  return [...results];
+}
+
 function extractRecognizedText(parsedXml: unknown, fallbackText: string) {
-  const words = extractWords(parsedXml).map((word) => word.text).filter(Boolean);
+  const words = extractWords(parsedXml).map((word) => word.text).filter((text) => /[A-Za-z]/.test(text));
   if (words.length > 0) return words.join(' ');
 
   const sentenceNode = findNodesByName(parsedXml, 'sentence')[0];
-  const sentenceText = String(getAttr(sentenceNode, ['content', 'text']) ?? '').trim();
-  return sentenceText || fallbackText;
+  const sentenceText = String(getAttr(sentenceNode, ['content', 'text', 'recognizedText', 'rec_text']) ?? '').trim();
+  if (/[A-Za-z]/.test(sentenceText)) {
+    return sentenceText;
+  }
+
+  const textCandidates = collectTextCandidates(parsedXml, ['recognizedText', 'rec_text', 'content', 'text']);
+  if (textCandidates.length > 0) {
+    return textCandidates.sort((a, b) => b.length - a.length)[0];
+  }
+
+  return fallbackText;
 }
 
 function parseXunfeiXml(rawXml: string, referenceText: string): SpeechEvaluationResult {
@@ -173,6 +208,13 @@ function buildAuthUrl(apiKey: string, apiSecret: string) {
     authorization: Buffer.from(authorizationOrigin, 'utf8').toString('base64'),
     date,
     host: XUNFEI_HOST,
+  });
+
+  console.log('[XunfeiService] Auth signature generated', {
+    host: XUNFEI_HOST,
+    path: XUNFEI_PATH,
+    date,
+    apiKeyPrefix: apiKey.slice(0, 6),
   });
 
   return `${XUNFEI_URL}?${params.toString()}`;
@@ -289,15 +331,30 @@ export async function evaluateSpeechWithXunfei({
   const apiKey = process.env.XUNFEI_API_KEY;
   const apiSecret = process.env.XUNFEI_API_SECRET;
 
+  console.log('[XunfeiService] Starting evaluation', {
+    hasAppId: Boolean(appId),
+    hasApiKey: Boolean(apiKey),
+    hasApiSecret: Boolean(apiSecret),
+    referenceText,
+    audioBytes: audio.byteLength,
+  });
+
   if (!appId || !apiKey || !apiSecret) {
+    console.error('[XunfeiService] Missing authentication environment variables');
     throw new Error('XUNFEI_APP_ID, XUNFEI_API_KEY and XUNFEI_API_SECRET must be configured.');
   }
   if (!referenceText.trim()) {
+    console.error('[XunfeiService] Missing reference text');
     throw new Error('referenceText is required for Xunfei speech evaluation.');
   }
 
   const audioBuffer = getRawPcmBuffer(Buffer.from(audio));
+  console.log('[XunfeiService] Prepared PCM payload', {
+    pcmBytes: audioBuffer.length,
+  });
+
   if (audioBuffer.length === 0) {
+    console.error('[XunfeiService] Audio payload is empty after PCM extraction');
     throw new Error('Audio payload is empty.');
   }
 
@@ -317,45 +374,79 @@ export async function evaluateSpeechWithXunfei({
     };
 
     timeout = setTimeout(() => {
+      console.error('[XunfeiService] Timed out waiting for final result');
       finish(() => reject(new Error('Xunfei speech evaluation timed out.')));
     }, SOCKET_TIMEOUT_MS);
 
     socket.on('open', () => {
+      console.log('[XunfeiService] WebSocket connected');
       socket.send(JSON.stringify(buildStartFrame(appId, referenceText)));
-      void sendAudioFrames(socket, audioBuffer).catch((error) => {
-        finish(() => reject(error));
-      });
+      console.log('[XunfeiService] Start frame sent');
+      void sendAudioFrames(socket, audioBuffer)
+        .then(() => {
+          console.log('[XunfeiService] Audio frames sent successfully');
+        })
+        .catch((error) => {
+          console.error('[XunfeiService] Audio frame send failed', error);
+          finish(() => reject(error));
+        });
     });
 
     socket.on('message', (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as XunfeiMessage;
-        if (message.code !== undefined && message.code !== 0) {
-          finish(() => reject(new Error(`Xunfei error ${message.code}: ${message.message || 'unknown error'}`)));
-          return;
-        }
+        console.log('[XunfeiService] Message received', {
+          code: message.code,
+          status: message.data?.status,
+          hasData: Boolean(message.data?.data),
+          message: message.message,
+        });
 
         if (message.data?.data) {
           latestXml = Buffer.from(message.data.data, 'base64').toString('utf8');
+          console.log('[XunfeiService] XML payload updated', {
+            xmlLength: latestXml.length,
+          });
         }
 
         if (message.data?.status === 2) {
           if (!latestXml) {
-            finish(() => reject(new Error('Xunfei returned an empty final evaluation result.')));
+            console.error('[XunfeiService] Final status reached but XML payload is empty');
+            finish(() => reject(new Error(`Xunfei returned no parsable XML. ${message.message || ''}`.trim())));
             return;
           }
+          console.log('[XunfeiService] Final result received, parsing XML');
           finish(() => resolve(parseXunfeiXml(latestXml, referenceText)));
+          return;
+        }
+
+        if (message.code !== undefined && message.code !== 0) {
+          console.error('[XunfeiService] Non-zero code from iFlytek', {
+            code: message.code,
+            message: message.message,
+          });
+
+          if (latestXml) {
+            console.log('[XunfeiService] Salvaging recognized text from partial XML despite non-zero code');
+            finish(() => resolve(parseXunfeiXml(latestXml, referenceText)));
+            return;
+          }
+
+          finish(() => reject(new Error(`Xunfei error ${message.code}: ${message.message || 'unknown error'}`)));
         }
       } catch (error) {
+        console.error('[XunfeiService] Failed to parse WebSocket message', error);
         finish(() => reject(error));
       }
     });
 
     socket.on('error', (error) => {
+      console.error('[XunfeiService] WebSocket error', error);
       finish(() => reject(error));
     });
 
     socket.on('close', () => {
+      console.log('[XunfeiService] WebSocket closed', { settled });
       if (!settled) {
         finish(() => reject(new Error('Xunfei WebSocket closed before final result.')));
       }

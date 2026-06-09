@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import styled from 'styled-components';
 import { AudioRecorder } from '@/components/audioRecorder';
 import { ChatWindow, type ChatWindowMessage } from '@/components/chatWindow';
+import FinalEpilogue from '@/components/FinalEpilogue';
 import { MapTransition } from '@/components/MapTransition';
 import { PronunciationFeedback } from '@/components/pronunciationFeedback';
 import { TaskPanel } from '@/components/taskPanel';
@@ -277,13 +278,16 @@ function loadSpeechVoices() {
 const Main: React.FC = () => {
   const {
     currentLevel,
+    currentLevelId,
     currentLevelIndex,
     gameState,
     taskStatus,
+    setCurrentLevelId,
     setGameState,
     applyTaskValidation,
     completeAllTasks,
     goToNextLevel,
+    restartJourney,
   } = useLevelManager();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -486,10 +490,8 @@ const Main: React.FC = () => {
   };
 
   const playAudioElement = async (audio: HTMLAudioElement, shouldWaitForOutput = true) => {
-    if (shouldWaitForOutput) {
+    if (shouldWaitForOutput || isRecordingRef.current || getOutputBlockDelay() > 0) {
       await waitForOutputReady();
-    } else if (isRecordingRef.current || getOutputBlockDelay() > 0) {
-      return;
     }
 
     stopActiveSpeech();
@@ -608,6 +610,108 @@ const Main: React.FC = () => {
     bgmFadeFrameRef.current = window.requestAnimationFrame(step);
   };
 
+  const addUserAudioOnlyMessage = (
+    audioUrl: string,
+    transcriptText: string,
+    sessionId = levelSessionRef.current,
+  ) => {
+    if (!isCurrentLevelSession(sessionId)) {
+      URL.revokeObjectURL(audioUrl);
+      return null;
+    }
+
+    if (isLevelClearedRef.current) {
+      URL.revokeObjectURL(audioUrl);
+      return null;
+    }
+
+    return addMessage('user', transcriptText.trim(), true, audioUrl, sessionId);
+  };
+
+  const continueNpcDialogue = async (
+    spokenText: string,
+    userAudioMessage: Message,
+    sessionId = levelSessionRef.current,
+  ) => {
+    if (!isCurrentLevelSession(sessionId)) {
+      return;
+    }
+
+    if (isLevelClearedRef.current) {
+      return;
+    }
+
+    if (!hasEnglishSpeechText(spokenText)) {
+      return;
+    }
+
+    setMessages((prev) => prev.map((message) => (
+      message.id === userAudioMessage.id
+        ? { ...message, text: spokenText }
+        : message
+    )));
+
+    setIsAwaitingNpc(true);
+    const nextHistory = [
+      ...messages,
+      {
+        ...userAudioMessage,
+        text: spokenText,
+      },
+    ];
+
+    try {
+      void fetch('/api/validate-tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ levelId: currentLevel.id, history: nextHistory }),
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Task validator request failed: ${response.status}`);
+          }
+
+          const validation = await response.json() as TaskValidationResult;
+          if (isCurrentLevelSession(sessionId)) {
+            applyTaskValidation(validation);
+          }
+        })
+        .catch((error) => {
+          console.warn('Task validator request failed:', error);
+        });
+
+      const chatResponse = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: spokenText, history: nextHistory, levelId: currentLevel.id }),
+      });
+
+      if (!isCurrentLevelSession(sessionId)) return;
+
+      if (!chatResponse.ok) {
+        throw new Error(`Chat request failed: ${chatResponse.status}`);
+      }
+
+      const data = await chatResponse.json();
+      const reply = data.reply || '';
+
+      if (reply) {
+        addMessage('assistant', reply, true, undefined, sessionId);
+        void speakText(reply, sessionId);
+      }
+    } catch (error) {
+      console.error('API 请求失败:', error);
+      if (!isCurrentLevelSession(sessionId)) return;
+      const fallbackText = 'The connection is unstable, like ripples in a pond... (API Error)';
+      addMessage('assistant', fallbackText, true, undefined, sessionId);
+      void speakText(fallbackText, sessionId);
+    } finally {
+      if (isCurrentLevelSession(sessionId)) {
+        setIsAwaitingNpc(false);
+      }
+    }
+  };
+
   const unlockAudio = async () => {
     audioUnlockedRef.current = true;
     setAudioUnlocked(true);
@@ -643,13 +747,18 @@ const Main: React.FC = () => {
     sessionId = levelSessionRef.current,
   ) => {
     const cleanReferenceText = referenceText.trim();
-    if (!hasEnglishSpeechText(cleanReferenceText)) {
-      throw new Error('No English speech text was recognized for pronunciation assessment.');
-    }
+    const expectedText = cleanReferenceText || 'Please read this sentence clearly.';
+
+    console.log('[Frontend][Xunfei] Triggering evaluation request', {
+      referenceText: expectedText,
+      audioType: audioBlob.type,
+      audioSize: audioBlob.size,
+    });
 
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.wav');
-    formData.append('referenceText', cleanReferenceText);
+    formData.append('text', expectedText);
+    formData.append('referenceText', expectedText);
 
     const response = await fetch('/api/evaluate-speech', {
       method: 'POST',
@@ -666,10 +775,27 @@ const Main: React.FC = () => {
     return payload as SpeechEvaluationResult;
   };
 
-  const { isRecording, startRecording, stopRecording } = useAudioRecorder({
+  const {
+    isRecording,
+    isSpeechRecognitionSupported,
+    speechRecognitionError: nativeSpeechRecognitionError,
+    liveTranscript,
+    recognitionState,
+    startRecording,
+    stopRecording,
+  } = useAudioRecorder({
     releaseDelayMs: MIC_RELEASE_COOLDOWN_MS,
-    onRecorded: async ({ text, audioUrl, evaluationBlob }) => {
+    onRecorded: async ({ text, audioUrl, evaluationBlob, speechRecognitionError }) => {
       const sessionId = activeRecordingSessionRef.current;
+      console.log('[Frontend][Recorder] onRecorded fired', {
+        sessionId,
+        text,
+        hasEvaluationBlob: Boolean(evaluationBlob),
+        evaluationBlobType: evaluationBlob?.type,
+        evaluationBlobSize: evaluationBlob?.size,
+        speechRecognitionError,
+      });
+
       if (!isCurrentLevelSession(sessionId)) {
         URL.revokeObjectURL(audioUrl);
         return;
@@ -678,10 +804,28 @@ const Main: React.FC = () => {
       setPronunciationError(null);
       setPronunciationResult(null);
 
-      let spokenText = text.trim();
+      const spokenText = text.trim();
+      const userAudioMessage = addUserAudioOnlyMessage(audioUrl, spokenText || '[Voice message]', sessionId);
+      if (!userAudioMessage) {
+        return;
+      }
+
+      if (hasEnglishSpeechText(spokenText)) {
+        void continueNpcDialogue(spokenText, userAudioMessage, sessionId);
+      } else if (!isSpeechRecognitionSupported) {
+        setPronunciationError('Your browser does not support native speech recognition for English input, so the dialogue could not be triggered from voice.');
+      } else if (speechRecognitionError) {
+        setPronunciationError(`Native speech recognition failed (${speechRecognitionError}), so the dialogue could not be triggered from this recording.`);
+      } else {
+        setPronunciationError('Your recording was saved, but browser native speech recognition did not capture a usable English sentence.');
+      }
+
+      if (!evaluationBlob) {
+        setPronunciationError((current) => current || 'The recording was saved, but local WAV conversion failed, so iFlytek pronunciation scoring is unavailable for this message.');
+        return;
+      }
+
       if (!hasEnglishSpeechText(spokenText)) {
-        setPronunciationError('No English speech was recognized. Please hold the button and speak a full English sentence.');
-        URL.revokeObjectURL(audioUrl);
         return;
       }
 
@@ -689,38 +833,22 @@ const Main: React.FC = () => {
       try {
         const evaluation = await evaluateRecordedSpeech(evaluationBlob, spokenText, sessionId);
         if (!isCurrentLevelSession(sessionId)) {
-          URL.revokeObjectURL(audioUrl);
           return;
         }
 
         if (evaluation) {
           setPronunciationResult(evaluation);
-          if (hasEnglishSpeechText(evaluation.recognizedText)) {
-            spokenText = evaluation.recognizedText.trim();
-          }
         }
       } catch (error) {
         console.warn('Xunfei speech evaluation failed:', error);
         if (isCurrentLevelSession(sessionId)) {
-          setPronunciationError(error instanceof Error ? error.message : 'Speech evaluation failed.');
+          setPronunciationError('iFlytek scoring is unavailable for this recording, but the dialogue has continued normally.');
         }
       } finally {
         if (isCurrentLevelSession(sessionId)) {
           setIsEvaluatingSpeech(false);
         }
       }
-
-      if (!isCurrentLevelSession(sessionId)) {
-        URL.revokeObjectURL(audioUrl);
-        return;
-      }
-
-      if (isLevelClearedRef.current) {
-        URL.revokeObjectURL(audioUrl);
-        return;
-      }
-
-      void handleSend(spokenText, true, audioUrl, sessionId);
     },
   });
 
@@ -868,6 +996,21 @@ const Main: React.FC = () => {
     setGameState('intro-video');
   };
 
+  const handleMapChangeVideoEnd = () => {
+    levelSessionRef.current += 1;
+    setMessages([]);
+    setInputText('');
+    setInputMode('text');
+    setPlayingId(null);
+    setIsAwaitingNpc(false);
+    setIsLevelCleared(false);
+    isLevelClearedRef.current = false;
+    setPronunciationError(null);
+    setPronunciationResult(null);
+    pendingOpeningTextRef.current = null;
+    setGameState('map-transition');
+  };
+
   const handleVideoEnd = () => {
     if (gameState === 'intro-video') {
       setGameState('game');
@@ -901,6 +1044,30 @@ const Main: React.FC = () => {
     setInputText('');
     setInputMode('text');
     setPlayingId(null);
+    setPronunciationError(null);
+    setPronunciationResult(null);
+    setIsAwaitingNpc(false);
+
+    if (currentLevelId === 3) {
+      levelSessionRef.current += 1;
+      setCurrentLevelId(4);
+      setGameState('map-change-video');
+      return;
+    }
+
+    if (currentLevelId === 6) {
+      levelSessionRef.current += 1;
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '/assets/bgm/level-2.mp3';
+        audioRef.current.load();
+        audioRef.current.volume = BGM_IDLE_VOLUME;
+        audioRef.current.play().catch(() => {});
+      }
+      setGameState('epilogue');
+      return;
+    }
+
     setGameState('end-video');
   };
 
@@ -1024,7 +1191,11 @@ const Main: React.FC = () => {
   };
 
   return (
-    <MediaPlaybackProvider bgmRef={audioRef}>
+    <MediaPlaybackProvider
+      bgmRef={audioRef}
+      currentLevelId={currentLevel.id}
+      currentBgmSrc={currentLevel.media.bgm}
+    >
       <Page>
         <audio ref={audioRef} loop src={currentLevel.media.bgm} />
         <BackgroundLayer $blur={gameState === 'start'} $image={currentLevel.media.background} />
@@ -1041,6 +1212,30 @@ const Main: React.FC = () => {
             mapData={currentLevel.mapData}
             onComplete={handleMapTransitionComplete}
           />
+        )}
+
+        {gameState === 'map-change-video' && (
+          <VideoOverlay>
+            <ManagedFullScreenVideo
+              src="/assets/map_change.mp4"
+              onEnded={handleMapChangeVideoEnd}
+            />
+            <button
+              onClick={handleMapChangeVideoEnd}
+              style={{
+                position: 'absolute',
+                top: 30,
+                right: 30,
+                zIndex: 31,
+                background: 'transparent',
+                color: '#fbbf24',
+                border: '1px solid #fbbf24',
+                padding: '5px 15px',
+              }}
+            >
+              Skip
+            </button>
+          </VideoOverlay>
         )}
 
         {(gameState === 'intro-video' || gameState === 'end-video') && (
@@ -1067,6 +1262,19 @@ const Main: React.FC = () => {
           </VideoOverlay>
         )}
 
+        {gameState === 'epilogue' && (
+          <FinalEpilogue
+            onRestart={() => {
+              levelSessionRef.current += 1;
+              restartJourney();
+            }}
+            onReturnHome={() => {
+              levelSessionRef.current += 1;
+              restartJourney();
+            }}
+          />
+        )}
+
         {gameState === 'game' && (
           <>
             <LeftSection>
@@ -1083,12 +1291,15 @@ const Main: React.FC = () => {
                       : message
                   )));
                 }}
+                onEnterNextLevel={() => {
+                  handlePlayFinalVideo();
+                }}
               />
 
               <PronunciationFeedback
                 result={pronunciationResult}
                 isLoading={isEvaluatingSpeech}
-                error={pronunciationError}
+                error={pronunciationError || (!isSpeechRecognitionSupported ? 'Browser native English speech recognition is not available in this browser.' : nativeSpeechRecognitionError ? `Native speech recognition issue: ${nativeSpeechRecognitionError}` : null)}
               />
 
               <AudioRecorder
@@ -1096,6 +1307,10 @@ const Main: React.FC = () => {
                 inputMode={inputMode}
                 inputText={inputText}
                 isRecording={isRecording}
+                isSpeechRecognitionSupported={isSpeechRecognitionSupported}
+                recognitionState={recognitionState}
+                liveTranscript={liveTranscript}
+                speechRecognitionError={nativeSpeechRecognitionError}
                 completionSummary={isLevelCleared ? currentLevel.completionSummary : undefined}
                 onInputModeChange={setInputMode}
                 onInputTextChange={setInputText}

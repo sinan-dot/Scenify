@@ -4,7 +4,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 import { LEVELS, getLevelById, levels } from '@/config/levels';
 import type { LevelConfig, TaskValidationResult } from '@/lib/types';
 
-type GameState = 'start' | 'map-transition' | 'intro-video' | 'game' | 'end-video' | 'level-complete';
+type GameState = 'start' | 'map-transition' | 'map-change-video' | 'intro-video' | 'game' | 'end-video' | 'epilogue' | 'level-complete';
 
 type LevelManagerValue = {
   currentLevel: LevelConfig;
@@ -18,6 +18,7 @@ type LevelManagerValue = {
   applyTaskValidation: (result: Partial<TaskValidationResult>) => void;
   completeAllTasks: () => void;
   goToNextLevel: () => void;
+  restartJourney: () => void;
 };
 
 const LevelManagerContext = createContext<LevelManagerValue | null>(null);
@@ -55,7 +56,13 @@ export function LevelManagerProvider({ children }: { children: React.ReactNode }
       if (!LEVELS[currentLevelId + 1]) return;
 
       setCurrentLevelId((previousLevelId) => previousLevelId + 1);
+      setGameState('map-transition');
+    };
+
+    const restartJourney = () => {
+      setCurrentLevelId(levels[0].id);
       setGameState('start');
+      setTaskStatus(createEmptyTaskStatus(levels[0]));
     };
 
     return {
@@ -70,6 +77,7 @@ export function LevelManagerProvider({ children }: { children: React.ReactNode }
       applyTaskValidation,
       completeAllTasks,
       goToNextLevel: startNextLevelIntro,
+      restartJourney,
     };
   }, [currentLevel, currentLevelId, currentLevelIndex, gameState, taskStatus]);
 
