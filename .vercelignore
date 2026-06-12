@@ -1,0 +1,14 @@
+.git
+.git/**
+.git/lfs
+.git/lfs/**
+node_modules
+node_modules/**
+.next
+.next/**
+materials
+materials/**
+docs-images
+tsconfig.tsbuildinfo
+refactor-plan.md
+*.DS_Store
