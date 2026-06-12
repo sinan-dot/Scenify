@@ -4,8 +4,8 @@
     "title": "Level 1: The Way of Tao (道仁之辩)",
     "narrative": "In the middle of the Spring and Autumn Period, rituals collapsed. Confucius, harboring the ambition of benevolent governance, traveled to Luoyang to visit Laozi. On an ancient path filled with autumn wind, a dialogue between 'Tao' and 'Ren' quietly begins...",
     "bgImage": "/assets/level-1/bg.png",
-    "introVideo": "/assets/level-1/video-intro.mp4",
-    "outroVideo": "/assets/level-1/video-end.mp4",
+    "introVideo": "https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-1/intro.mp4",
+    "outroVideo": "https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-1/video-end.mp4",
     "music": "/assets/level-1/music-theme.mp3",
     "npcName": "Laozi (老子)",
     "playerRole": "Confucius",
@@ -27,7 +27,7 @@
     "desc": "墨子劝说楚王放弃攻宋",
     "assets": {
       "background": "/assets/level-2/bg.png",
-      "introVideo": "/assets/level-2/video-intro.mp4",
+      "introVideo": "https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-2/intro.mp4",
       "bgm": "/assets/level-2/music-theme.mp3"
     },
     "playerRole": {

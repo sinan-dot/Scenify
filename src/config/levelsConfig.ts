@@ -170,8 +170,8 @@ const levels: LevelConfig[] = [
     },
     media: {
       background: '/assets/level-1/bg.png',
-      video: '/assets/level-1/intro.mp4',
-      outroVideo: '/assets/level-1/video-end.mp4',
+      video: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-1/intro.mp4',
+      outroVideo: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-1/video-end.mp4',
       bgm: '/assets/bgm/level-1.mp3',
     },
     mapData: {
@@ -255,8 +255,8 @@ const levels: LevelConfig[] = [
     },
     media: {
       background: '/assets/level-2/bg.png',
-      video: '/assets/level-2/intro.mp4',
-      outroVideo: '/assets/level-2/video-end.mp4',
+      video: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-2/intro.mp4',
+      outroVideo: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-2/video-end.mp4',
       bgm: '/assets/bgm/level-2.mp3',
     },
     mapData: {
@@ -341,8 +341,8 @@ const levels: LevelConfig[] = [
     },
     media: {
       background: '/assets/level-3/bg.png',
-      video: '/assets/level-3/intro.mp4',
-      outroVideo: '/assets/level-3/video-end.mp4',
+      video: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-3/intro.mp4',
+      outroVideo: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-3/video-end.mp4',
       bgm: '/assets/bgm/level-3.mp3',
     },
     mapData: {
@@ -427,8 +427,8 @@ const levels: LevelConfig[] = [
     },
     media: {
       background: '/assets/level-4/bg.png',
-      video: '/assets/level-4/intro.mp4',
-      outroVideo: '/assets/level-4/video-end.mp4',
+      video: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-4/intro.mp4',
+      outroVideo: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-4/video-end.mp4',
       bgm: '/assets/bgm/level-4.mp3',
     },
     mapData: {
@@ -513,8 +513,8 @@ const levels: LevelConfig[] = [
     },
     media: {
       background: '/assets/level-5/bg.png',
-      video: '/assets/level-5/intro.mp4',
-      outroVideo: '/assets/level-5/video-end.mp4',
+      video: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-5/intro.mp4',
+      outroVideo: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-5/video-end.mp4',
       bgm: '/assets/bgm/level-5.mp3',
     },
     mapData: {
@@ -599,8 +599,8 @@ const levels: LevelConfig[] = [
     },
     media: {
       background: '/assets/level-6/bg.png',
-      video: '/assets/level-6/intro.mp4',
-      outroVideo: '/assets/level-6/video-end.mp4',
+      video: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-6/intro.mp4',
+      outroVideo: 'https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/level-6/video-end.mp4',
       bgm: '/assets/bgm/level-6.mp3',
     },
     mapData: {

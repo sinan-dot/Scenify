@@ -1217,7 +1217,7 @@ const Main: React.FC = () => {
         {gameState === 'map-change-video' && (
           <VideoOverlay>
             <ManagedFullScreenVideo
-              src="/assets/map_change.mp4"
+              src="https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/map_change.mp4"
               onEnded={handleMapChangeVideoEnd}
             />
             <button

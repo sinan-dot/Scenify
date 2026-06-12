@@ -9,6 +9,7 @@ node_modules/**
 materials
 materials/**
 docs-images
+public/assets/**/*.mp4
 tsconfig.tsbuildinfo
 refactor-plan.md
 *.DS_Store
