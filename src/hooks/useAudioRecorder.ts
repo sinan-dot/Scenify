@@ -107,6 +107,16 @@ function resampleTo16k(input: Float32Array, sourceRate: number): Float32Array {
   return out;
 }
 
+/** Return the max absolute amplitude in a Float32Array PCM buffer. */
+function maxAmplitude(samples: Float32Array): number {
+  let max = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const abs = Math.abs(samples[i]);
+    if (abs > max) max = abs;
+  }
+  return max;
+}
+
 export function useAudioRecorder({
   language = 'en-US',
   releaseDelayMs = 300,
@@ -115,6 +125,7 @@ export function useAudioRecorder({
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeechRecognitionSupported, setIsSpeechRecognitionSupported] = useState(false);
   const [speechRecognitionError, setSpeechRecognitionError] = useState<string | null>(null);
+  const [isSttDegraded, setIsSttDegraded] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState('');
   const [recognitionState, setRecognitionState] = useState<'idle' | 'listening' | 'restarting' | 'error'>('idle');
 
@@ -172,12 +183,31 @@ export function useAudioRecorder({
     };
     recognition.onerror = (event: any) => {
       const errorCode = String(event?.error || 'unknown');
-      console.warn('SpeechRecognition error:', errorCode);
-      setSpeechRecognitionError(errorCode);
-      if (errorCode === 'network' || errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+      console.warn('[SpeechRecognition] onerror:', errorCode, event?.message ?? '');
+
+      // Fatal errors: permission denied — block everything
+      if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+        console.warn('[SpeechRecognition] Fatal error — aborting recognition');
         recognitionFatalRef.current = true;
+        setSpeechRecognitionError(errorCode);
+        setIsSttDegraded(false);
         try { recognition.abort(); } catch {}
+        setRecognitionState('error');
+        return;
       }
+
+      // Non-fatal errors: STT unavailable but audio recording continues
+      if (NON_FATAL_RECOGNITION_ERRORS.has(errorCode)) {
+        console.warn(`[SpeechRecognition] Non-fatal error (${errorCode}) — STT degraded, audio recording continues`);
+        setIsSttDegraded(true);
+        setSpeechRecognitionError(null); // Don't block UI with error message
+        // Keep recognitionState as 'listening' or current state — don't set to 'error'
+        return;
+      }
+
+      // Unknown error: log but don't abort (cautious fallback)
+      console.error('[SpeechRecognition] Unknown error:', errorCode);
+      setSpeechRecognitionError(errorCode);
       setRecognitionState('error');
     };
     recognition.onend = () => {
@@ -213,6 +243,7 @@ export function useAudioRecorder({
     shouldKeepRecognitionAliveRef.current = true;
     setIsRecording(true);
     setSpeechRecognitionError(null);
+    setIsSttDegraded(false);
     setLiveTranscript('');
     setRecognitionState(isSpeechRecognitionSupported ? 'listening' : 'idle');
     transcriptRef.current = '';
@@ -268,9 +299,14 @@ export function useAudioRecorder({
         pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       };
 
-      // Must be connected to destination for onaudioprocess to fire; output is silence (no writes)
+      // Chromium: a ScriptProcessorNode that is disconnected from or directly connected
+      // to destination may be suspended by the browser, yielding all-zero PCM.
+      // Insert a zero-gain GainNode to keep the graph "alive" while outputting silence.
+      const silentGain = ctx.createGain();
+      silentGain.gain.value = 0;
       source.connect(processor);
-      processor.connect(ctx.destination);
+      processor.connect(silentGain);
+      silentGain.connect(ctx.destination);
 
       try { recognitionRef.current?.start(); } catch (err) {
         console.warn('SpeechRecognition start failed:', err);
@@ -334,17 +370,31 @@ export function useAudioRecorder({
 
         const pcm16k = resampleTo16k(allPcm, sampleRate);
 
-        // Guard: require at least 0.3 s of audio (4800 samples @ 16 kHz).
-        // A shorter blob means the mic captured nothing useful — sending it would
-        // waste iFlytek quota and trigger a fallback-to-DeepSeek on the backend.
+        // ── VAD silence gate + minimum-length guard ──────────────────────
+        // Two-tier check to avoid wasting iFlytek quota on silent/useless audio:
+        //  1. Minimum duration: at least 0.3 s (4800 samples @ 16 kHz)
+        //  2. Maximum amplitude: must exceed 0.01 (Float32 range) to rule out
+        //     pure silence (mic muted, Chromium node suspended, etc.)
         const MIN_SAMPLES = 4800;
+        const SILENCE_AMPLITUDE_THRESHOLD = 0.01;
+
+        let silenceReason: string | null = null;
         if (pcm16k.length < MIN_SAMPLES) {
-          console.warn('[useAudioRecorder] Recording too short — skipping evaluation blob', { samples: pcm16k.length });
+          silenceReason = `too short (${pcm16k.length} samples < ${MIN_SAMPLES})`;
+        } else {
+          const peak = maxAmplitude(pcm16k);
+          if (peak < SILENCE_AMPLITUDE_THRESHOLD) {
+            silenceReason = `absolute silence — peak amplitude ${peak.toFixed(6)} < ${SILENCE_AMPLITUDE_THRESHOLD}`;
+          }
         }
 
         const wavBlob = new Blob([encodePcmWav(pcm16k, 16000)], { type: 'audio/wav' });
         const audioUrl = URL.createObjectURL(wavBlob);
-        const evaluationBlob = pcm16k.length >= MIN_SAMPLES ? wavBlob : null;
+        const evaluationBlob = silenceReason ? null : wavBlob;
+
+        if (silenceReason) {
+          console.warn('[useAudioRecorder] Blocking evaluation — audio is', silenceReason);
+        }
 
         const text = getBestTranscript(transcriptRef.current, interimTranscriptRef.current);
         const resolvedRecognitionError = speechRecognitionError && !NON_FATAL_RECOGNITION_ERRORS.has(speechRecognitionError)
@@ -367,6 +417,7 @@ export function useAudioRecorder({
     isRecording,
     isSpeechRecognitionSupported,
     speechRecognitionError,
+    isSttDegraded,
     liveTranscript,
     recognitionState,
     startRecording,

@@ -10,6 +10,7 @@ type AudioRecorderProps = {
   inputText: string;
   isRecording: boolean;
   isSpeechRecognitionSupported?: boolean;
+  isSttDegraded?: boolean;
   recognitionState?: 'idle' | 'listening' | 'restarting' | 'error';
   liveTranscript?: string;
   speechRecognitionError?: string | null;
@@ -200,6 +201,7 @@ export function AudioRecorder({
   inputText,
   isRecording,
   isSpeechRecognitionSupported = true,
+  isSttDegraded = false,
   recognitionState = 'idle',
   liveTranscript = '',
   speechRecognitionError = null,
@@ -272,32 +274,40 @@ export function AudioRecorder({
             <RecognitionBadge $tone={
               !isSpeechRecognitionSupported
                 ? 'bad'
-                : recognitionState === 'listening'
-                  ? 'good'
-                  : recognitionState === 'restarting'
-                    ? 'warn'
-                    : recognitionState === 'error'
-                      ? 'bad'
-                      : 'warn'
+                : isSttDegraded
+                  ? 'warn'
+                  : recognitionState === 'listening'
+                    ? 'good'
+                    : recognitionState === 'restarting'
+                      ? 'warn'
+                      : recognitionState === 'error'
+                        ? 'bad'
+                        : 'warn'
             }>
               {!isSpeechRecognitionSupported
                 ? 'Native STT Unsupported'
-                : recognitionState === 'listening'
-                  ? 'Native STT Listening'
-                  : recognitionState === 'restarting'
-                    ? 'Native STT Restarting'
-                    : recognitionState === 'error'
-                      ? 'Native STT Error'
-                      : 'Native STT Idle'}
+                : isSttDegraded
+                  ? 'Live Transcript Disabled'
+                  : recognitionState === 'listening'
+                    ? 'Native STT Listening'
+                    : recognitionState === 'restarting'
+                      ? 'Native STT Restarting'
+                      : recognitionState === 'error'
+                        ? 'Native STT Error'
+                        : 'Native STT Idle'}
             </RecognitionBadge>
             <RecognitionMeta>Language: en-US</RecognitionMeta>
           </RecognitionHeader>
 
           <TranscriptPreview>
-            {liveTranscript || (isRecording ? 'Waiting for browser transcript...' : 'Hold to speak and watch the live transcript here.')}
+            {isSttDegraded
+              ? (isRecording
+                  ? '🎙️ Recording voice for assessment... (Live transcript disabled by browser)'
+                  : 'Live transcript disabled by browser. Voice recording still works for assessment.')
+              : (liveTranscript || (isRecording ? 'Waiting for browser transcript...' : 'Hold to speak and watch the live transcript here.'))}
           </TranscriptPreview>
 
-          {speechRecognitionError && (
+          {speechRecognitionError && !isSttDegraded && (
             <RecognitionErrorText>{speechRecognitionError}</RecognitionErrorText>
           )}
         </RecognitionStatus>

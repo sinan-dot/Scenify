@@ -828,6 +828,7 @@ const Main: React.FC = () => {
     isRecording,
     isSpeechRecognitionSupported,
     speechRecognitionError: nativeSpeechRecognitionError,
+    isSttDegraded,
     liveTranscript,
     recognitionState,
     startRecording,
@@ -1402,7 +1403,15 @@ const Main: React.FC = () => {
               <PronunciationFeedback
                 result={pronunciationResult}
                 isLoading={isEvaluatingSpeech}
-                error={pronunciationError || (!isSpeechRecognitionSupported ? 'Browser native English speech recognition is not available in this browser.' : nativeSpeechRecognitionError ? `Native speech recognition issue: ${nativeSpeechRecognitionError}` : null)}
+                error={pronunciationError || (
+                  isSttDegraded
+                    ? null  // Don't show error for degraded STT — it's handled below in AudioRecorder hints
+                    : !isSpeechRecognitionSupported
+                      ? 'Browser native English speech recognition is not available in this browser.'
+                      : nativeSpeechRecognitionError
+                        ? `Native speech recognition issue: ${nativeSpeechRecognitionError}`
+                        : null
+                )}
               />
 
               <AudioRecorder
@@ -1411,6 +1420,7 @@ const Main: React.FC = () => {
                 inputText={inputText}
                 isRecording={isRecording}
                 isSpeechRecognitionSupported={isSpeechRecognitionSupported}
+                isSttDegraded={isSttDegraded}
                 recognitionState={recognitionState}
                 liveTranscript={liveTranscript}
                 speechRecognitionError={nativeSpeechRecognitionError}
