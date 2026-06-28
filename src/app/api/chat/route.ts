@@ -96,17 +96,37 @@ function cleanNpcReply(text: string) {
     .trim();
 }
 
-function buildReportSystemPrompt() {
+function buildReportSystemPrompt(pronunciationData?: Record<string, unknown> | null) {
+  const scoreSection = pronunciationData
+    ? `
+IMPORTANT: The iFlytek speech engine has already scored this learner's pronunciation with real data. Use it — do NOT say you "can only see text" or cannot judge pronunciation.
+
+iFlytek scores:
+- Overall: ${pronunciationData.overallScore ?? 'N/A'}
+- Accuracy: ${(pronunciationData.scores as Record<string, unknown>)?.accuracy ?? 'N/A'}
+- Fluency: ${(pronunciationData.scores as Record<string, unknown>)?.fluency ?? 'N/A'}
+- Standard: ${(pronunciationData.scores as Record<string, unknown>)?.standard ?? 'N/A'}
+- Integrity: ${(pronunciationData.scores as Record<string, unknown>)?.integrity ?? 'N/A'}
+- Recognised text: "${pronunciationData.recognizedText ?? ''}"
+- Weak words (score < 70): ${Array.isArray(pronunciationData.words)
+    ? (pronunciationData.words as Array<{text: string; score: number | null}>)
+        .filter((w) => typeof w.score === 'number' && w.score < 70)
+        .map((w) => `${w.text}(${w.score})`)
+        .join(', ') || 'none'
+    : 'N/A'}
+`
+    : '\nNote: No iFlytek pronunciation data available for this session.';
+
   return `
 You are an IELTS speaking coach. Based on the learner's English conversation record, write a Chinese speaking improvement report that is practical, specific, and visually clear.
-
+${scoreSection}
 Requirements:
 1. Use clear Markdown headings and short bullet lists.
 2. Include these sections in Chinese: ## 总评, ## 亮点, ## 关键问题, ## 逐句优化, ## 发音与流利度建议, ## 下一步练习方案.
 3. In 总评, give an overall score from 0 to 10 and one-sentence level judgment.
 4. In 关键问题, point out concrete grammar, vocabulary, logic, or expression issues.
 5. In 逐句优化, provide 2-4 original learner sentences or fragments, explain what is wrong, and give corrected English.
-6. In 发音与流利度建议, give actionable advice such as stress, pausing, linking, or word-choice practice. If the transcript alone is not enough to judge exact pronunciation, say so honestly but still give useful likely practice directions.
+6. In 发音与流利度建议, use the iFlytek scores and weak words above to give specific, data-driven advice. Do not say you cannot judge pronunciation.
 7. In 下一步练习方案, give a short, operable 3-step practice plan for the learner.
 8. Keep the tone encouraging, precise, and directly useful for improvement.
 `;
@@ -168,7 +188,7 @@ export async function POST(req: Request) {
     const messages: ChatMessage[] = [
       {
         role: 'system' as const,
-        content: isReportMode ? buildReportSystemPrompt() : systemPrompt,
+        content: isReportMode ? buildReportSystemPrompt(body.pronunciationData ?? null) : systemPrompt,
       },
       ...(!isReportMode ? history : []),
       ...(effectiveCurrentMessage

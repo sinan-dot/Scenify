@@ -266,7 +266,7 @@ export function FinalEpilogue({
         <FullScreenVideo
           ref={videoRef}
           autoPlay
-          src="https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/assets/qin-unification.mp4"
+          src="https://pub-767ddbd8c1a84aa8b124c23bd3d5e248.r2.dev/qin-unification.mp4"
           onPlay={(event) => notifyVideoPlay(event.currentTarget)}
           onEnded={handleVideoEnd}
         />

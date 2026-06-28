@@ -291,6 +291,19 @@ const Main: React.FC = () => {
   } = useLevelManager();
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const messagesRef = useRef<Message[]>(messages);
+  // Keep messagesRef in sync so async callbacks always read the latest history
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // 🧹 清洗科大讯飞 recognizedText 中的内部标记（sil=静音, fil=填充词等）
+  const cleanXunfeiText = (raw: string) => {
+    return raw
+      .replace(/\b(sil|fil|noise|laugh|cola|oov|hes)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
   const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
   const [inputText, setInputText] = useState('');
   const [playingId, setPlayingId] = useState<number | null>(null);
@@ -652,8 +665,10 @@ const Main: React.FC = () => {
     )));
 
     setIsAwaitingNpc(true);
+    // 🔧 使用 ref 读取最新 messages，避免 stale closure
+    const latestMessages = messagesRef.current;
     const nextHistory = [
-      ...messages,
+      ...latestMessages,
       {
         ...userAudioMessage,
         text: spokenText,
@@ -760,19 +775,53 @@ const Main: React.FC = () => {
     formData.append('text', expectedText);
     formData.append('referenceText', expectedText);
 
-    const response = await fetch('/api/evaluate-speech', {
-      method: 'POST',
-      body: formData,
-    });
+    // 🔧 30s 超时兜底，防止后端 WebSocket 挂死时前端无限等待
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.warn('[Frontend][Xunfei] Fetch timeout — aborting');
+      controller.abort();
+    }, 30000);
 
-    if (!isCurrentLevelSession(sessionId)) return null;
+    try {
+      const response = await fetch('/api/evaluate-speech', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
 
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || `Xunfei evaluation failed: ${response.status}`);
+      clearTimeout(timeoutId);
+
+      if (!isCurrentLevelSession(sessionId)) return null;
+
+      // 🔧 分步解析 JSON，每步单独 catch 以便精确定位挂点
+      let payload: any;
+      try {
+        payload = await response.json();
+      } catch (jsonError) {
+        console.error('[Frontend][Xunfei] response.json() failed', jsonError);
+        throw new Error(`Xunfei response is not valid JSON (HTTP ${response.status}).`);
+      }
+
+      console.log('[Frontend][Xunfei] Response received', {
+        ok: response.ok,
+        status: response.status,
+        hasOverallScore: 'overallScore' in payload,
+        hasError: 'error' in payload,
+      });
+
+      if (!response.ok) {
+        throw new Error(payload.error || `Xunfei evaluation failed: ${response.status}`);
+      }
+
+      return payload as SpeechEvaluationResult;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error?.name === 'AbortError') {
+        console.error('[Frontend][Xunfei] Request aborted (timeout or user action)');
+        throw new Error('Xunfei speech evaluation timed out. Please try again.');
+      }
+      throw error;
     }
-
-    return payload as SpeechEvaluationResult;
   };
 
   const {
@@ -805,30 +854,39 @@ const Main: React.FC = () => {
       setPronunciationResult(null);
 
       const spokenText = text.trim();
+      const sttHasEnglish = hasEnglishSpeechText(spokenText);
+
+      // 🔧 即使 STT 失败（国内环境 Web Speech API 连不上），
+      // 仍然先创建用户消息占位，等讯飞评测返回后再补填文字并触发 NPC 对话
       const userAudioMessage = addUserAudioOnlyMessage(audioUrl, spokenText || '[Voice message]', sessionId);
       if (!userAudioMessage) {
         return;
       }
 
-      if (hasEnglishSpeechText(spokenText)) {
+      // STT 拿到了英文文字 → 立即触发 NPC 对话（与讯飞评测并行）
+      if (sttHasEnglish) {
         void continueNpcDialogue(spokenText, userAudioMessage, sessionId);
-      } else if (!isSpeechRecognitionSupported) {
-        setPronunciationError('Your browser does not support native speech recognition for English input, so the dialogue could not be triggered from voice.');
-      } else if (speechRecognitionError) {
-        setPronunciationError(`Native speech recognition failed (${speechRecognitionError}), so the dialogue could not be triggered from this recording.`);
-      } else {
-        setPronunciationError('Your recording was saved, but browser native speech recognition did not capture a usable English sentence.');
       }
 
       if (!evaluationBlob) {
-        setPronunciationError((current) => current || 'The recording was saved, but local WAV conversion failed, so iFlytek pronunciation scoring is unavailable for this message.');
+        console.warn('⚠️ [Evaluate] 跳过讯飞评测：evaluationBlob 为空', {
+          blobType: evaluationBlob,
+          spokenText,
+          speechRecognitionError,
+          reason: 'convertTo16KhzMonoWav 可能失败或浏览器不支持 OfflineAudioContext',
+        });
+        // 🔧 如果 STT 没有英文文字且没有 evaluationBlob，对话无法继续
+        if (!sttHasEnglish) {
+          console.warn('[Frontend][Recorder] STT produced no English text and no evaluation audio available — dialogue may stall');
+        }
         return;
       }
 
-      if (!hasEnglishSpeechText(spokenText)) {
-        return;
-      }
-
+      console.log('🚀 [Evaluate] 准备发送语音数据到后端', {
+        blobSize: evaluationBlob.size,
+        blobType: evaluationBlob.type,
+        referenceText: spokenText || '(empty — backend will use fallback)',
+      });
       setIsEvaluatingSpeech(true);
       try {
         const evaluation = await evaluateRecordedSpeech(evaluationBlob, spokenText, sessionId);
@@ -837,17 +895,58 @@ const Main: React.FC = () => {
         }
 
         if (evaluation) {
-          setPronunciationResult(evaluation);
+          // 🧹 清洗讯飞返回的 recognizedText，移除 sil/fil/noise 等内部标记
+          const rawRecognized = evaluation.recognizedText || '';
+          const cleanRecognized = cleanXunfeiText(rawRecognized);
+          console.log('✅ [Evaluate] 讯飞评测成功', {
+            overallScore: evaluation.overallScore,
+            recognizedText: rawRecognized,
+            cleanRecognized,
+            sttText: spokenText,
+            sttHasEnglish,
+          });
+          setPronunciationResult({
+            ...evaluation,
+            recognizedText: cleanRecognized || rawRecognized,
+          });
+
+          // 🔧 关键兜底：STT 失败但讯飞洗出了英文文字 → 强制触发 NPC 对话
+          const xunfeiHasEnglish = hasEnglishSpeechText(cleanRecognized);
+          if (!sttHasEnglish && xunfeiHasEnglish) {
+            console.log('[Frontend][Recorder] 🔄 STT failed but Xunfei has clean recognizedText — forcing NPC dialogue', {
+              sttText: spokenText || '(empty)',
+              rawXunfeiText: rawRecognized,
+              cleanXunfeiText: cleanRecognized,
+            });
+
+            // 先更新用户消息文字（使用 functional updater 保证最新状态）
+            setMessages((prev) => prev.map((message) => (
+              message.id === userAudioMessage.id
+                ? { ...message, text: cleanRecognized }
+                : message
+            )));
+
+            // 用清洗后的文字触发 NPC 对话
+            void continueNpcDialogue(
+              cleanRecognized,
+              { ...userAudioMessage, text: cleanRecognized },
+              sessionId,
+            );
+          } else if (!sttHasEnglish && !xunfeiHasEnglish) {
+            console.warn('[Frontend][Recorder] ⚠️ STT and Xunfei both produced no English text — dialogue may stall', {
+              rawRecognized,
+              cleanRecognized,
+            });
+          }
         }
       } catch (error) {
-        console.warn('Xunfei speech evaluation failed:', error);
+        console.error('❌ [Evaluate] 讯飞评测失败:', error);
         if (isCurrentLevelSession(sessionId)) {
           setPronunciationError('iFlytek scoring is unavailable for this recording, but the dialogue has continued normally.');
         }
       } finally {
-        if (isCurrentLevelSession(sessionId)) {
-          setIsEvaluatingSpeech(false);
-        }
+        // 🔧 无论如何都要清除 loading 状态，避免 UI 永久卡死
+        setIsEvaluatingSpeech(false);
       }
     },
   });
@@ -1099,7 +1198,11 @@ const Main: React.FC = () => {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: `[SYSTEM_REPORT_MODE] ${userText}`, history: [] }),
+        body: JSON.stringify({
+          message: `[SYSTEM_REPORT_MODE] ${userText}`,
+          history: [],
+          pronunciationData: pronunciationResult ?? null,
+        }),
       });
       if (!res.ok) {
         throw new Error(`Report request failed: ${res.status}`);

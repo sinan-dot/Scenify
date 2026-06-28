@@ -58,8 +58,8 @@ function getBestTranscript(finalTranscript: string, interimTranscript: string) {
 }
 
 function writeString(view: DataView, offset: number, value: string) {
-  for (let index = 0; index < value.length; index += 1) {
-    view.setUint8(offset + index, value.charCodeAt(index));
+  for (let i = 0; i < value.length; i++) {
+    view.setUint8(offset + i, value.charCodeAt(i));
   }
 }
 
@@ -82,54 +82,29 @@ function encodePcmWav(samples: Float32Array, sampleRate: number) {
   view.setUint32(40, samples.length * 2, true);
 
   let offset = 44;
-  for (let index = 0; index < samples.length; index += 1, offset += 2) {
-    const sample = Math.max(-1, Math.min(1, samples[index]));
-    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
 
   return buffer;
 }
 
-async function convertTo16KhzMonoWav(audioBlob: Blob) {
-  console.log('[Recorder] Starting WAV conversion', {
-    sourceType: audioBlob.type,
-    sourceSize: audioBlob.size,
-  });
-
-  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextConstructor || typeof OfflineAudioContext === 'undefined') {
-    console.error('[Recorder] AudioContext or OfflineAudioContext unavailable for WAV conversion');
-    return null;
+/** Linear-interpolation resample to 16 kHz mono. */
+function resampleTo16k(input: Float32Array, sourceRate: number): Float32Array {
+  if (sourceRate === 16000) return input;
+  const ratio = sourceRate / 16000;
+  const length = Math.floor(input.length / ratio);
+  const out = new Float32Array(length);
+  for (let i = 0; i < length; i++) {
+    const pos = i * ratio;
+    const idx = Math.floor(pos);
+    const frac = pos - idx;
+    const a = input[idx] ?? 0;
+    const b = input[Math.min(idx + 1, input.length - 1)] ?? a;
+    out[i] = a + frac * (b - a);
   }
-
-  const decodeContext = new AudioContextConstructor();
-  try {
-    const audioBuffer = await decodeContext.decodeAudioData(await audioBlob.arrayBuffer());
-    const sampleRate = 16000;
-    const frameCount = Math.max(1, Math.ceil(audioBuffer.duration * sampleRate));
-    const offlineContext = new OfflineAudioContext(1, frameCount, sampleRate);
-    const source = offlineContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(offlineContext.destination);
-    source.start(0);
-
-    const renderedBuffer = await offlineContext.startRendering();
-    const wavBlob = new Blob([encodePcmWav(renderedBuffer.getChannelData(0), sampleRate)], {
-      type: 'audio/wav; codecs=audio/pcm; samplerate=16000',
-    });
-
-    console.log('[Recorder] WAV conversion completed', {
-      targetType: wavBlob.type,
-      targetSize: wavBlob.size,
-      sampleRate,
-      channels: 1,
-      bitsPerSample: 16,
-    });
-
-    return wavBlob;
-  } finally {
-    await decodeContext.close().catch(() => {});
-  }
+  return out;
 }
 
 export function useAudioRecorder({
@@ -142,20 +117,25 @@ export function useAudioRecorder({
   const [speechRecognitionError, setSpeechRecognitionError] = useState<string | null>(null);
   const [liveTranscript, setLiveTranscript] = useState('');
   const [recognitionState, setRecognitionState] = useState<'idle' | 'listening' | 'restarting' | 'error'>('idle');
+
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const transcriptRef = useRef('');
   const interimTranscriptRef = useRef('');
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const isRecordingRef = useRef(false);
   const recognitionEndResolverRef = useRef<(() => void) | null>(null);
   const shouldKeepRecognitionAliveRef = useRef(false);
+  const recognitionFatalRef = useRef(false);
+
+  // Web Audio refs replacing MediaRecorder
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const pcmChunksRef = useRef<Float32Array[]>([]);
+  const isCapturingRef = useRef(false);
 
   const stopLocalMicTracks = () => {
-    localStreamRef.current?.getTracks().forEach((track) => {
-      track.stop();
-    });
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
   };
 
@@ -194,28 +174,17 @@ export function useAudioRecorder({
       const errorCode = String(event?.error || 'unknown');
       console.warn('SpeechRecognition error:', errorCode);
       setSpeechRecognitionError(errorCode);
+      if (errorCode === 'network' || errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
+        recognitionFatalRef.current = true;
+        try { recognition.abort(); } catch {}
+      }
       setRecognitionState('error');
     };
     recognition.onend = () => {
       const resolver = recognitionEndResolverRef.current;
       recognitionEndResolverRef.current = null;
       resolver?.();
-
-      if (shouldKeepRecognitionAliveRef.current && isRecordingRef.current) {
-        setRecognitionState('restarting');
-        try {
-          recognition.start();
-          setRecognitionState('listening');
-        } catch (error) {
-          console.warn('SpeechRecognition restart failed:', error);
-          setRecognitionState('error');
-        }
-        return;
-      }
-
-      if (!isRecordingRef.current) {
-        setRecognitionState('idle');
-      }
+      if (!isRecordingRef.current) setRecognitionState('idle');
     };
 
     recognitionRef.current = recognition;
@@ -224,18 +193,15 @@ export function useAudioRecorder({
       recognition.onresult = null;
       recognition.onerror = null;
       recognition.onend = null;
-      try {
-        recognition.abort();
-      } catch {}
+      try { recognition.abort(); } catch {}
     };
   }, [language]);
 
   useEffect(() => {
     return () => {
       stopLocalMicTracks();
-      if (typeof window !== 'undefined') {
-        window.speechSynthesis?.cancel();
-      }
+      audioContextRef.current?.close().catch(() => {});
+      if (typeof window !== 'undefined') window.speechSynthesis?.cancel();
     };
   }, []);
 
@@ -243,6 +209,7 @@ export function useAudioRecorder({
     if (isRecordingRef.current) return;
 
     isRecordingRef.current = true;
+    isCapturingRef.current = true;
     shouldKeepRecognitionAliveRef.current = true;
     setIsRecording(true);
     setSpeechRecognitionError(null);
@@ -251,59 +218,67 @@ export function useAudioRecorder({
     transcriptRef.current = '';
     interimTranscriptRef.current = '';
     recognitionEndResolverRef.current = null;
+    recognitionFatalRef.current = false;
+
+    // Create and resume AudioContext synchronously within the user-gesture call stack.
+    // Safari blocks resume() if called after any await — must happen here, before getUserMedia.
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextCtor && !audioContextRef.current) {
+      const ctx = new AudioContextCtor();
+      audioContextRef.current = ctx;
+      void ctx.resume();
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
-          channelCount: 1,
-        },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
         video: false,
       });
+
       if (!isRecordingRef.current) {
-        stream.getTracks().forEach((track) => track.stop());
+        stream.getTracks().forEach((t) => t.stop());
         return;
       }
 
       const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        stream.getTracks().forEach((track) => track.stop());
+      if (!audioTracks.length) {
+        stream.getTracks().forEach((t) => t.stop());
         throw new Error('No microphone audio track available.');
       }
+      stream.getVideoTracks().forEach((t) => t.stop());
 
-      stream.getVideoTracks().forEach((track) => track.stop());
       const pureMicStream = new MediaStream(audioTracks);
-      const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : undefined;
-      const recorder = preferredMimeType
-        ? new MediaRecorder(pureMicStream, { mimeType: preferredMimeType })
-        : new MediaRecorder(pureMicStream);
-
       localStreamRef.current = pureMicStream;
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
+      pcmChunksRef.current = [];
 
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunksRef.current.push(event.data);
-      };
-      recorder.onerror = (event) => {
-        console.warn('MediaRecorder error:', event);
-        stopLocalMicTracks();
-        mediaRecorderRef.current = null;
+      const ctx = audioContextRef.current!;
+      // Ensure resumed (e.g. context was created in unlockAudio and may still be suspended)
+      if (ctx.state === 'suspended') await ctx.resume();
+
+      const source = ctx.createMediaStreamSource(pureMicStream);
+      sourceNodeRef.current = source;
+
+      // ScriptProcessorNode: universally supported fallback (AudioWorklet needs separate file)
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      processorRef.current = processor;
+
+      processor.onaudioprocess = (e) => {
+        if (!isCapturingRef.current) return;
+        // Copy — the underlying buffer is reused by the browser
+        pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       };
 
-      recorder.start();
-      try {
-        recognitionRef.current?.start();
-      } catch (error) {
-        console.warn('SpeechRecognition start failed:', error);
+      // Must be connected to destination for onaudioprocess to fire; output is silence (no writes)
+      source.connect(processor);
+      processor.connect(ctx.destination);
+
+      try { recognitionRef.current?.start(); } catch (err) {
+        console.warn('SpeechRecognition start failed:', err);
       }
     } catch (error) {
       console.warn('Microphone start failed:', error);
       isRecordingRef.current = false;
+      isCapturingRef.current = false;
       setIsRecording(false);
     }
   };
@@ -312,86 +287,79 @@ export function useAudioRecorder({
     if (!isRecordingRef.current) return;
 
     isRecordingRef.current = false;
+    isCapturingRef.current = false;
     shouldKeepRecognitionAliveRef.current = false;
     setIsRecording(false);
     setRecognitionState('idle');
 
     try {
       const recognitionEndPromise = new Promise<void>((resolve) => {
-        if (!recognitionRef.current) {
-          resolve();
-          return;
-        }
-
-        let didResolve = false;
-        const finish = () => {
-          if (didResolve) return;
-          didResolve = true;
-          recognitionEndResolverRef.current = null;
-          resolve();
-        };
-
+        if (!recognitionRef.current) { resolve(); return; }
+        let done = false;
+        const finish = () => { if (done) return; done = true; recognitionEndResolverRef.current = null; resolve(); };
         recognitionEndResolverRef.current = finish;
         window.setTimeout(finish, 900);
       });
 
-      try {
-        recognitionRef.current?.stop();
-      } catch (error) {
-        console.warn('SpeechRecognition stop failed:', error);
+      try { recognitionRef.current?.stop(); } catch (err) {
+        console.warn('SpeechRecognition stop failed:', err);
         recognitionEndResolverRef.current?.();
         recognitionEndResolverRef.current = null;
       }
 
-      const recorder = mediaRecorderRef.current;
-      if (!recorder) {
-        stopLocalMicTracks();
-        return;
-      }
+      // Capture and clear Web Audio state before async work
+      const ctx = audioContextRef.current;
+      const chunks = pcmChunksRef.current;
 
-      recorder.onstop = async () => {
-        const audioType = recorder.mimeType || 'audio/webm';
-        const audioBlob = new Blob(audioChunksRef.current, { type: audioType });
-        const audioUrl = URL.createObjectURL(audioBlob);
+      sourceNodeRef.current?.disconnect();
+      processorRef.current?.disconnect();
+      processorRef.current = null;
+      sourceNodeRef.current = null;
+      audioContextRef.current = null;
+      pcmChunksRef.current = [];
+
+      stopLocalMicTracks();
+
+      // Assemble WAV from raw PCM asynchronously
+      void (async () => {
         await recognitionEndPromise;
 
-        let text = getBestTranscript(transcriptRef.current, interimTranscriptRef.current);
-        let evaluationBlob: Blob | null = null;
+        const sampleRate = ctx?.sampleRate ?? 44100;
+        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+        const allPcm = new Float32Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) { allPcm.set(chunk, offset); offset += chunk.length; }
 
-        mediaRecorderRef.current = null;
+        await ctx?.close().catch(() => {});
 
-        try {
-          evaluationBlob = await convertTo16KhzMonoWav(audioBlob);
-        } catch (error) {
-          console.warn('16kHz WAV conversion failed:', error);
+        const pcm16k = resampleTo16k(allPcm, sampleRate);
+
+        // Guard: require at least 0.3 s of audio (4800 samples @ 16 kHz).
+        // A shorter blob means the mic captured nothing useful — sending it would
+        // waste iFlytek quota and trigger a fallback-to-DeepSeek on the backend.
+        const MIN_SAMPLES = 4800;
+        if (pcm16k.length < MIN_SAMPLES) {
+          console.warn('[useAudioRecorder] Recording too short — skipping evaluation blob', { samples: pcm16k.length });
         }
 
+        const wavBlob = new Blob([encodePcmWav(pcm16k, 16000)], { type: 'audio/wav' });
+        const audioUrl = URL.createObjectURL(wavBlob);
+        const evaluationBlob = pcm16k.length >= MIN_SAMPLES ? wavBlob : null;
+
+        const text = getBestTranscript(transcriptRef.current, interimTranscriptRef.current);
         const resolvedRecognitionError = speechRecognitionError && !NON_FATAL_RECOGNITION_ERRORS.has(speechRecognitionError)
           ? speechRecognitionError
           : null;
 
         window.setTimeout(() => {
-          onRecorded({
-            text,
-            audioUrl,
-            audioBlob,
-            evaluationBlob,
-            speechRecognitionError: resolvedRecognitionError,
-          });
+          onRecorded({ text, audioUrl, audioBlob: wavBlob, evaluationBlob, speechRecognitionError: resolvedRecognitionError });
         }, releaseDelayMs);
-      };
-
-      if (recorder.state !== 'inactive') {
-        recorder.requestData();
-        recorder.stop();
-      }
-      stopLocalMicTracks();
+      })();
     } catch (error) {
       console.warn('Microphone stop failed:', error);
       isRecordingRef.current = false;
       setIsRecording(false);
       stopLocalMicTracks();
-      mediaRecorderRef.current = null;
     }
   };
 

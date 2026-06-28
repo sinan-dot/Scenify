@@ -16,24 +16,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing audio file.' }, { status: 400 });
     }
 
-    const expectedText = typeof text === 'string' && text.trim().length > 0
-      ? text.trim()
-      : typeof referenceText === 'string' && referenceText.trim().length > 0
-        ? referenceText.trim()
-        : '';
-
-    console.log('[API][Xunfei] Request payload summary', {
-      audioType: audio.type,
-      audioSize: audio.size,
-      text,
-      referenceText,
-      expectedText,
-    });
-
-    if (!expectedText) {
-      console.error('[API][Xunfei] Missing text/referenceText');
-      return NextResponse.json({ error: 'Missing text or referenceText.' }, { status: 400 });
-    }
+    // Fall back to a generic prompt when the frontend has no transcript (e.g. STT silent / network error)
+    const expectedText =
+      (typeof text === 'string' && text.trim()) ||
+      (typeof referenceText === 'string' && referenceText.trim()) ||
+      'Please read this sentence clearly.';
 
     const result = await evaluateSpeechWithXunfei({
       audio: await audio.arrayBuffer(),

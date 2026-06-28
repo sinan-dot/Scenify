@@ -195,6 +195,100 @@ function parseXunfeiXml(rawXml: string, referenceText: string): SpeechEvaluation
   };
 }
 
+// 🔧 正则强抽：当完整 XML 解析失败时，从原始文本中暴力提取 recognizedText
+function regexExtractRecognizedText(rawXml: string): string {
+  // 尝试多种 patterns，按优先级排列
+  const patterns = [
+    // 标准 XML 标签内容
+    /<rec_text>([^<]+)<\/rec_text>/i,
+    /<recognizedText>([^<]+)<\/recognizedText>/i,
+    /<rec_paper>[\s\S]*?<rec_text>([^<]+)<\/rec_text>/i,
+    // content 属性或标签
+    /<content>([^<]+)<\/content>/i,
+    /content="([^"]+)"/i,
+    /content='([^']+)'/i,
+    // read_sentence / sentence 节点
+    /<sentence[^>]*content="([^"]+)"/i,
+    /<word[^>]*content="([^"]+)"/gi,
+    // 任何看起来像英文句子的内容（3个以上英文单词）
+    /([A-Za-z]+(?:\s+[A-Za-z]+){2,})/g,
+  ];
+
+  for (const pattern of patterns) {
+    const matches = rawXml.match(pattern);
+    if (matches) {
+      if (pattern.flags.includes('g')) {
+        // 全局匹配：收集所有匹配项
+        const texts = [...matches].map((m) => {
+          // 对于带捕获组的全局匹配，取捕获组
+          const execResult = pattern.exec(rawXml);
+          return execResult ? (execResult[1] || execResult[0]) : m;
+        });
+        const joined = texts.filter((t) => /[A-Za-z]/.test(t)).join(' ');
+        if (joined.trim()) return joined.trim();
+      } else {
+        const text = (matches[1] || matches[0]).replace(/\s+/g, ' ').trim();
+        if (/[A-Za-z]{3,}/.test(text)) return text;
+      }
+    }
+  }
+
+  return '';
+}
+
+// 🛡️ 抗崩溃包装器：无论如何都返回一个可用的 SpeechEvaluationResult，
+// 保证 recognizedText 永远有值，业务流不中断
+function resilientParseXunfeiResult(rawXml: string, referenceText: string, parseError?: string): SpeechEvaluationResult {
+  // 🚨 先打印原始数据
+  console.log('🚨 讯飞原始 Payload 截取:', rawXml.substring(0, 800));
+  console.log('🚨 讯飞原始 Payload 总长度:', rawXml.length);
+
+  // 尝试完整 XML 解析
+  try {
+    const result = parseXunfeiXml(rawXml, referenceText);
+    // 如果解析成功但 recognizedText 为空（兜底是 referenceText），用正则再试一次
+    if (!result.recognizedText || result.recognizedText === referenceText) {
+      const regexText = regexExtractRecognizedText(rawXml);
+      if (regexText) {
+        console.log('[XunfeiService] 🔧 Regex backfill recognizedText:', regexText);
+        result.recognizedText = regexText;
+      }
+    }
+    console.log('[XunfeiService] ✅ Full XML parse succeeded', {
+      overallScore: result.overallScore,
+      recognizedText: result.recognizedText?.substring(0, 50),
+      wordCount: result.words.length,
+    });
+    return result;
+  } catch (error) {
+    console.error('[XunfeiService] ⚠️ Full XML parse threw, falling back to regex extraction:', error);
+  }
+
+  // 降级：正则暴抽文本
+  const regexText = regexExtractRecognizedText(rawXml);
+  console.log('[XunfeiService] 🔧 Regex extracted text:', regexText || '(empty)');
+
+  const fallbackText = regexText || referenceText;
+
+  // 构造降级结果：没有评分，但有识别文本
+  return {
+    provider: 'xunfei',
+    overallScore: null,
+    recognizedText: fallbackText,
+    referenceText,
+    scores: {
+      total: null,
+      accuracy: null,
+      fluency: null,
+      standard: null,
+      integrity: null,
+    },
+    words: [],
+    rawXml,
+    raw: { _parseError: parseError || 'XML parse failed, regex extraction used', _fallback: true },
+  };
+}
+
 function buildAuthUrl(apiKey: string, apiSecret: string) {
   const date = new Date().toUTCString();
   const signatureOrigin = `host: ${XUNFEI_HOST}\ndate: ${date}\nGET ${XUNFEI_PATH} HTTP/1.1`;
@@ -210,14 +304,17 @@ function buildAuthUrl(apiKey: string, apiSecret: string) {
     host: XUNFEI_HOST,
   });
 
-  console.log('[XunfeiService] Auth signature generated', {
+  console.log('[XunfeiService] Auth URL generated', {
+    url: `${XUNFEI_URL}?...`,
     host: XUNFEI_HOST,
     path: XUNFEI_PATH,
     date,
     apiKeyPrefix: apiKey.slice(0, 6),
   });
 
-  return `${XUNFEI_URL}?${params.toString()}`;
+  const fullUrl = `${XUNFEI_URL}?${params.toString()}`;
+  console.log('[XunfeiService] Full WSS URL:', fullUrl.substring(0, 120) + '...');
+  return fullUrl;
 }
 
 function buildReferenceText(text: string) {
@@ -365,17 +462,47 @@ export async function evaluateSpeechWithXunfei({
 
     let timeout: NodeJS.Timeout;
 
+    const safeResolve = (result: SpeechEvaluationResult) => {
+      console.log('[XunfeiService] ✅ Resolving with parsed result', {
+        overallScore: result.overallScore,
+        recognizedText: result.recognizedText?.substring(0, 50),
+      });
+      resolve(result);
+    };
+
+    const safeReject = (error: Error) => {
+      console.error('[XunfeiService] ❌ Rejecting:', error.message);
+      reject(error);
+    };
+
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      callback();
-      socket.close();
+      // 🔒 必须 try-catch：一旦 settled=true 就没有回头路，
+      // callback 内部抛异常会导致 Promise 永久挂起
+      try {
+        callback();
+      } catch (error) {
+        console.error('[XunfeiService] finish callback threw:', error);
+        // 如果 resolve/reject 都还没被调用，这里已经是死路了，
+        // 但 try-catch 至少防止了未捕获异常
+      }
+      try {
+        socket.close();
+      } catch {
+        // socket 可能已经关闭
+      }
     };
 
     timeout = setTimeout(() => {
-      console.error('[XunfeiService] Timed out waiting for final result');
-      finish(() => reject(new Error('Xunfei speech evaluation timed out.')));
+      console.error('[XunfeiService] Timed out waiting for final result', { hasXml: Boolean(latestXml) });
+      if (latestXml) {
+        console.log('[XunfeiService] Salvaging partial XML on timeout');
+        finish(() => safeResolve(resilientParseXunfeiResult(latestXml, referenceText, 'timeout salvage')));
+      } else {
+        finish(() => safeReject(new Error('Xunfei speech evaluation timed out.')));
+      }
     }, SOCKET_TIMEOUT_MS);
 
     socket.on('open', () => {
@@ -388,20 +515,29 @@ export async function evaluateSpeechWithXunfei({
         })
         .catch((error) => {
           console.error('[XunfeiService] Audio frame send failed', error);
-          finish(() => reject(error));
+          finish(() => safeReject(error instanceof Error ? error : new Error('Audio frame send failed')));
         });
     });
 
     socket.on('message', (raw) => {
       try {
-        const message = JSON.parse(raw.toString()) as XunfeiMessage;
-        console.log('[XunfeiService] Message received', {
+        const rawString = raw.toString();
+        console.log('📥 收到科大讯飞返回数据:', rawString.substring(0, 500));
+        const message = JSON.parse(rawString) as XunfeiMessage;
+
+        // 🔍 完整打印 message 结构以便排查字段位置
+        console.log('[XunfeiService] Parsed message structure', {
           code: message.code,
-          status: message.data?.status,
-          hasData: Boolean(message.data?.data),
           message: message.message,
+          sid: message.sid,
+          hasData: message.data !== undefined,
+          dataKeys: message.data ? Object.keys(message.data) : [],
+          dataStatus: message.data?.status,
+          dataStatusType: typeof message.data?.status,
+          hasDataPayload: Boolean(message.data?.data),
         });
 
+        // 累积 XML 数据
         if (message.data?.data) {
           latestXml = Buffer.from(message.data.data, 'base64').toString('utf8');
           console.log('[XunfeiService] XML payload updated', {
@@ -409,17 +545,27 @@ export async function evaluateSpeechWithXunfei({
           });
         }
 
-        if (message.data?.status === 2) {
+        // ✅ 检测最终结果：status === 2（兼容 string/number）
+        const finalStatus = message.data?.status;
+        if (finalStatus !== undefined && finalStatus !== null && Number(finalStatus) === 2) {
           if (!latestXml) {
             console.error('[XunfeiService] Final status reached but XML payload is empty');
-            finish(() => reject(new Error(`Xunfei returned no parsable XML. ${message.message || ''}`.trim())));
+            finish(() => safeReject(new Error(`Xunfei returned no parsable XML. ${message.message || ''}`.trim())));
             return;
           }
-          console.log('[XunfeiService] Final result received, parsing XML');
-          finish(() => resolve(parseXunfeiXml(latestXml, referenceText)));
+          console.log('[XunfeiService] Final result received (status=2), parsing XML');
+          finish(() => safeResolve(resilientParseXunfeiResult(latestXml, referenceText, 'status=2')));
           return;
         }
 
+        // ✅ 兜底：code === 0 且已有 XML，视为结果已就绪
+        if (message.code === 0 && latestXml) {
+          console.log('[XunfeiService] Code 0 with accumulated XML — resolving as complete');
+          finish(() => safeResolve(resilientParseXunfeiResult(latestXml, referenceText, 'code-0 fallback')));
+          return;
+        }
+
+        // ❌ 非零错误码
         if (message.code !== undefined && message.code !== 0) {
           console.error('[XunfeiService] Non-zero code from iFlytek', {
             code: message.code,
@@ -428,27 +574,34 @@ export async function evaluateSpeechWithXunfei({
 
           if (latestXml) {
             console.log('[XunfeiService] Salvaging recognized text from partial XML despite non-zero code');
-            finish(() => resolve(parseXunfeiXml(latestXml, referenceText)));
+            finish(() => safeResolve(resilientParseXunfeiResult(latestXml, referenceText, `non-zero code ${message.code}`)));
             return;
           }
 
-          finish(() => reject(new Error(`Xunfei error ${message.code}: ${message.message || 'unknown error'}`)));
+          finish(() => safeReject(new Error(`Xunfei error ${message.code}: ${message.message || 'unknown error'}`)));
         }
       } catch (error) {
         console.error('[XunfeiService] Failed to parse WebSocket message', error);
-        finish(() => reject(error));
+        finish(() => safeReject(error instanceof Error ? error : new Error('Failed to parse WebSocket message')));
       }
     });
 
     socket.on('error', (error) => {
       console.error('[XunfeiService] WebSocket error', error);
-      finish(() => reject(error));
+      finish(() => safeReject(error instanceof Error ? error : new Error('Xunfei WebSocket error')));
     });
 
-    socket.on('close', () => {
-      console.log('[XunfeiService] WebSocket closed', { settled });
+    socket.on('close', (code: number, reason: Buffer) => {
+      const reasonStr = reason?.toString?.() || '(none)';
+      console.log('⚠️ 科大讯飞 WS 断开，状态码:', code, '原因:', reasonStr, { settled, hasXml: Boolean(latestXml) });
       if (!settled) {
-        finish(() => reject(new Error('Xunfei WebSocket closed before final result.')));
+        // 🔧 抢救：WebSocket 断开但有部分 XML，尝试解析
+        if (latestXml) {
+          console.log('[XunfeiService] Salvaging partial XML on unexpected close');
+          finish(() => safeResolve(resilientParseXunfeiResult(latestXml, referenceText, `close code ${code}`)));
+        } else {
+          finish(() => safeReject(new Error(`Xunfei WebSocket closed before final result (code ${code}).`)));
+        }
       }
     });
   });

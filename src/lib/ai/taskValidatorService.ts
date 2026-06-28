@@ -145,15 +145,23 @@ function validateLevelTasksLocally(levelId: number | string, history: ChatMessag
 }
 
 function parseValidationResult(content: string): TaskValidationResult {
+  if (!content?.trim()) return EMPTY_VALIDATION;
+
+  // Strip markdown code fences that LLMs sometimes wrap around JSON
+  const cleaned = content.trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
   try {
-    const parsed = JSON.parse(content);
+    const parsed = JSON.parse(cleaned);
     return {
       task_1: parsed.task_1 === true,
       task_2: parsed.task_2 === true,
       task_3: parsed.task_3 === true,
     };
   } catch (error) {
-    console.error('Task validator JSON parse failed:', content, error);
+    console.error('Task validator JSON parse failed:', cleaned.substring(0, 120), error);
     return EMPTY_VALIDATION;
   }
 }
@@ -206,21 +214,22 @@ export async function validateLevelTasks({
     .join('\n');
 
   const systemPrompt = `
-You are a silent task validator for an English speaking learning game.
-Judge whether the learner has completed each task based on the recent conversation.
+You are a strict task completion auditor for an English speaking game.
+Evaluate ONLY the learner's messages (ignore assistant/NPC messages).
 
-Rules:
-- Only evaluate the learner's English messages, not the NPC messages.
-- Evaluate the whole recent conversation cumulatively. If the learner completed a task earlier in this history, keep it true.
-- Use semantic understanding. Do not require exact keywords.
-- Be strict enough to avoid accidental completion from vague answers like "yes", "ok", or "I don't know".
-- If a task is already clearly completed in the recent context, return true.
-- Output JSON only. Do not add markdown, comments, or explanations.
+CRITICAL RULES — apply all of them:
+1. Mark a task true ONLY when the learner has EXPLICITLY and SPECIFICALLY addressed that task's core requirement in their own words.
+2. A long sentence that vaguely touches many topics does NOT satisfy any task. Each task requires a dedicated, clear statement.
+3. Single short responses ("yes", "ok", "I agree", "that's right", "I understand") NEVER satisfy any task alone.
+4. Restating or paraphrasing what the NPC just said does NOT count.
+5. A task must be independently satisfied — one sentence cannot unlock multiple tasks simultaneously unless it contains clearly distinct, specific content for each.
+6. When in doubt, return false. Heavily err on the side of false.
+7. Cumulative evaluation: if the learner clearly completed a task in an earlier turn, keep it true.
 
-Tasks:
+Tasks (each must be INDEPENDENTLY and EXPLICITLY satisfied):
 ${taskRules}
 
-Required JSON schema:
+Output JSON only. No markdown, no comments.
 {"task_1": boolean, "task_2": boolean, "task_3": boolean}
 `;
 
@@ -235,12 +244,11 @@ Required JSON schema:
 
   try {
     const completion = await createChatCompletion(messages);
-    return mergeValidationResults(
-      parseValidationResult(completion.choices?.[0]?.message?.content ?? ''),
-      localValidation,
-    );
+    // Use model result as authoritative source — do NOT OR with local fallback here,
+    // as that allows keyword-only heuristics to bypass the strict LLM check.
+    return parseValidationResult(completion.choices?.[0]?.message?.content ?? '');
   } catch (error) {
     console.error('Task validator request failed:', error);
-    return localValidation;
+    return localValidation; // only fall back to local heuristics when API is down
   }
 }
