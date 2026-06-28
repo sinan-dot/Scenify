@@ -870,12 +870,16 @@ const Main: React.FC = () => {
       }
 
       if (!evaluationBlob) {
-        console.warn('⚠️ [Evaluate] 跳过讯飞评测：evaluationBlob 为空', {
+        console.warn('⚠️ [Audio Guard] Silent audio detected, blocking API call.', {
           blobType: evaluationBlob,
           spokenText,
           speechRecognitionError,
-          reason: 'convertTo16KhzMonoWav 可能失败或浏览器不支持 OfflineAudioContext',
+          reason: 'Audio amplitude too low or recording too short — possible microphone issue',
         });
+
+        // 友好提示用户检查麦克风
+        setPronunciationError('No sound detected. Please check your microphone settings and try again.');
+
         // 🔧 如果 STT 没有英文文字且没有 evaluationBlob，对话无法继续
         if (!sttHasEnglish) {
           console.warn('[Frontend][Recorder] STT produced no English text and no evaluation audio available — dialogue may stall');

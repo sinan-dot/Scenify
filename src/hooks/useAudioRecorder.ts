@@ -373,10 +373,10 @@ export function useAudioRecorder({
         // ── VAD silence gate + minimum-length guard ──────────────────────
         // Two-tier check to avoid wasting iFlytek quota on silent/useless audio:
         //  1. Minimum duration: at least 0.3 s (4800 samples @ 16 kHz)
-        //  2. Maximum amplitude: must exceed 0.01 (Float32 range) to rule out
+        //  2. Maximum amplitude: must exceed 0.005 (stricter threshold) to rule out
         //     pure silence (mic muted, Chromium node suspended, etc.)
         const MIN_SAMPLES = 4800;
-        const SILENCE_AMPLITUDE_THRESHOLD = 0.01;
+        const SILENCE_AMPLITUDE_THRESHOLD = 0.005;
 
         let silenceReason: string | null = null;
         if (pcm16k.length < MIN_SAMPLES) {
@@ -393,7 +393,7 @@ export function useAudioRecorder({
         const evaluationBlob = silenceReason ? null : wavBlob;
 
         if (silenceReason) {
-          console.warn('[useAudioRecorder] Blocking evaluation — audio is', silenceReason);
+          console.warn('[Audio Guard] Silent audio detected, blocking API call. Reason:', silenceReason);
         }
 
         const text = getBestTranscript(transcriptRef.current, interimTranscriptRef.current);
