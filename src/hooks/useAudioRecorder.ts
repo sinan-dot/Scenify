@@ -176,6 +176,10 @@ export function useAudioRecorder({
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const pcmChunksRef = useRef<Float32Array[]>([]);
   const isCapturingRef = useRef(false);
+  // Tracks the window between pointerdown and getUserMedia resolve.
+  // During this phase isRecordingRef is still false — stopRecording must
+  // silently abort instead of finalizing an empty session.
+  const permissionPendingRef = useRef(false);
 
   const stopLocalMicTracks = () => {
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -286,22 +290,18 @@ export function useAudioRecorder({
   }, []);
 
   const startRecording = async () => {
-    if (isRecordingRef.current) return;
+    if (isRecordingRef.current || permissionPendingRef.current) return;
 
-    isRecordingRef.current = true;
-    isCapturingRef.current = true;
-    shouldKeepRecognitionAliveRef.current = true;
-    setIsRecording(true);
+    // Reset transcript / error state early (safe before getUserMedia).
     setSpeechRecognitionError(null);
     setIsSttDegraded(false);
     setLiveTranscript('');
-    setRecognitionState(isSpeechRecognitionSupported ? 'listening' : 'idle');
     transcriptRef.current = '';
     interimTranscriptRef.current = '';
     recognitionEndResolverRef.current = null;
     recognitionFatalRef.current = false;
 
-    // Create and resume AudioContext synchronously within the user-gesture call stack.
+    // AudioContext must be created synchronously inside the user-gesture call stack.
     // Safari blocks resume() if called after any await — must happen here, before getUserMedia.
     const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
     if (AudioContextCtor && !audioContextRef.current) {
@@ -310,16 +310,28 @@ export function useAudioRecorder({
       void ctx.resume();
     }
 
+    permissionPendingRef.current = true;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
         video: false,
       });
 
-      if (!isRecordingRef.current) {
+      // User released the button while the permission dialog was open.
+      // permissionPendingRef was cleared by stopRecording — discard stream silently.
+      if (!permissionPendingRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
+
+      // Stream is ready — now it is safe to enter recording state.
+      permissionPendingRef.current = false;
+      isRecordingRef.current = true;
+      isCapturingRef.current = true;
+      shouldKeepRecognitionAliveRef.current = true;
+      setIsRecording(true);
+      setRecognitionState(isSpeechRecognitionSupported ? 'listening' : 'idle');
 
       const audioTracks = stream.getAudioTracks();
       if (!audioTracks.length) {
@@ -430,6 +442,7 @@ export function useAudioRecorder({
       }
     } catch (error) {
       console.warn('Microphone start failed:', error);
+      permissionPendingRef.current = false;
       isRecordingRef.current = false;
       isCapturingRef.current = false;
       setIsRecording(false);
@@ -458,6 +471,13 @@ export function useAudioRecorder({
       console.groupEnd();
     } catch (diagErr) {
       console.warn('[stopRecording] diagnostic logging failed (non-fatal):', diagErr);
+    }
+
+    // Permission dialog was open when user released — silently discard.
+    // startRecording will see permissionPendingRef=false and abort after getUserMedia resolves.
+    if (permissionPendingRef.current) {
+      permissionPendingRef.current = false;
+      return;
     }
 
     if (!isRecordingRef.current) return;
