@@ -342,11 +342,28 @@ const Main: React.FC = () => {
   const isCurrentLevelSession = (sessionId: number) => sessionId === levelSessionRef.current;
 
   const waitForOutputReady = async () => {
+    const __waitStart = Date.now();
+    console.log('[DIAG][waitForOutputReady] START', {
+      isRecording: isRecordingRef.current,
+      outputBlockDelay: getOutputBlockDelay(),
+    });
+    let __warned2s = false;
     while (isRecordingRef.current || getOutputBlockDelay() > 0) {
+      if (!__warned2s && Date.now() - __waitStart > 2000) {
+        __warned2s = true;
+        console.warn('[DIAG][waitForOutputReady] WAITING > 2s', {
+          elapsedMs: Date.now() - __waitStart,
+          isRecording: isRecordingRef.current,
+          outputBlockDelay: getOutputBlockDelay(),
+        });
+      }
       await new Promise((resolve) => {
         window.setTimeout(resolve, Math.max(50, getOutputBlockDelay()));
       });
     }
+    console.log('[DIAG][waitForOutputReady] END', {
+      elapsedMs: Date.now() - __waitStart,
+    });
   };
 
   const stopActiveSpeech = () => {
@@ -447,18 +464,41 @@ const Main: React.FC = () => {
   const fallbackSpeakText = (text: string, sessionId = levelSessionRef.current) => {
     return new Promise<void>((resolve) => {
       const cleanText = cleanSpeechText(text);
+      console.log('[DIAG][fallbackSpeakText] ENTRY', {
+        sessionId,
+        levelSessionRef: levelSessionRef.current,
+        cleanText: cleanText?.slice(0, 60),
+      });
       if (
         !cleanText ||
         !isCurrentLevelSession(sessionId) ||
         typeof window === 'undefined' ||
         !window.speechSynthesis
       ) {
+        if (!isCurrentLevelSession(sessionId)) {
+          console.warn('[DIAG][guard] isCurrentLevelSession=false — location: fallbackSpeakText/entry-guard', {
+            sessionId,
+            levelSessionRef: levelSessionRef.current,
+          });
+        }
         resolve();
         return;
       }
 
+      console.log('[DIAG][fallbackSpeakText] BEFORE waitForOutputReady', {
+        sessionId,
+        levelSessionRef: levelSessionRef.current,
+      });
       void waitForOutputReady().then(async () => {
+        console.log('[DIAG][fallbackSpeakText] AFTER waitForOutputReady', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+        });
         if (!isCurrentLevelSession(sessionId)) {
+          console.warn('[DIAG][guard] isCurrentLevelSession=false — location: fallbackSpeakText/after-waitForOutputReady', {
+            sessionId,
+            levelSessionRef: levelSessionRef.current,
+          });
           resolve();
           return;
         }
@@ -468,6 +508,10 @@ const Main: React.FC = () => {
         const selectedVoice = selectConfuciusVoice(await loadSpeechVoices());
 
         if (!isCurrentLevelSession(sessionId)) {
+          console.warn('[DIAG][guard] isCurrentLevelSession=false — location: fallbackSpeakText/after-loadVoices', {
+            sessionId,
+            levelSessionRef: levelSessionRef.current,
+          });
           resolve();
           return;
         }
@@ -484,20 +528,76 @@ const Main: React.FC = () => {
         utterance.volume = NPC_VOICE_VOLUME;
         isNpcSpeakingRef.current = true;
         fadeBgmVolume(BGM_DUCK_VOLUME);
+        utterance.onstart = () => {
+          console.log('[DIAG][SpeechSynthesis] utterance.onstart fired', {
+            speaking: window.speechSynthesis.speaking,
+            pending: window.speechSynthesis.pending,
+            paused: window.speechSynthesis.paused,
+          });
+        };
+        utterance.onpause = () => {
+          console.warn('[DIAG][SpeechSynthesis] utterance.onpause fired', {
+            speaking: window.speechSynthesis.speaking,
+            pending: window.speechSynthesis.pending,
+            paused: window.speechSynthesis.paused,
+          });
+        };
+        utterance.onresume = () => {
+          console.log('[DIAG][SpeechSynthesis] utterance.onresume fired', {
+            speaking: window.speechSynthesis.speaking,
+            pending: window.speechSynthesis.pending,
+            paused: window.speechSynthesis.paused,
+          });
+        };
         utterance.onend = () => {
+          console.log('[DIAG][SpeechSynthesis] utterance.onend fired', {
+            speaking: window.speechSynthesis.speaking,
+            pending: window.speechSynthesis.pending,
+            paused: window.speechSynthesis.paused,
+          });
           isNpcSpeakingRef.current = false;
           if (!isRecordingRef.current && getOutputBlockDelay() === 0) fadeBgmVolume(BGM_IDLE_VOLUME);
           resolve();
         };
-        utterance.onerror = () => {
+        utterance.onerror = (ev) => {
+          console.error('[DIAG][SpeechSynthesis] utterance.onerror fired', {
+            error: (ev as SpeechSynthesisErrorEvent).error,
+            speaking: window.speechSynthesis.speaking,
+            pending: window.speechSynthesis.pending,
+            paused: window.speechSynthesis.paused,
+          });
           isNpcSpeakingRef.current = false;
           if (!isRecordingRef.current && getOutputBlockDelay() === 0) fadeBgmVolume(BGM_IDLE_VOLUME);
           resolve();
         };
 
+        const __synth = window.speechSynthesis;
+        console.log('[DIAG][SpeechSynthesis] BEFORE speak()', {
+          voice: selectedVoice?.name ?? 'none',
+          speaking: __synth.speaking,
+          pending: __synth.pending,
+          paused: __synth.paused,
+        });
         fallbackSpeechRef.current = utterance;
-        window.speechSynthesis.resume();
-        window.speechSynthesis.speak(utterance);
+        __synth.resume();
+        __synth.speak(utterance);
+        console.log('[DIAG][SpeechSynthesis] AFTER speak()', {
+          speaking: __synth.speaking,
+          pending: __synth.pending,
+          paused: __synth.paused,
+        });
+
+        // Poll speaking/pending/paused every 200ms for 2s to confirm queue actually starts
+        let __pollCount = 0;
+        const __pollId = window.setInterval(() => {
+          __pollCount++;
+          console.log(`[DIAG][SpeechSynthesis] poll #${__pollCount}`, {
+            speaking: __synth.speaking,
+            pending: __synth.pending,
+            paused: __synth.paused,
+          });
+          if (__pollCount >= 10) window.clearInterval(__pollId);
+        }, 200);
       });
     });
   };
@@ -540,7 +640,20 @@ const Main: React.FC = () => {
 
   const speakText = async (text: string, sessionId = levelSessionRef.current) => {
     const cleanText = cleanSpeechText(text);
-    if (!cleanText || !isCurrentLevelSession(sessionId)) return;
+    console.log('[DIAG][speakText] ENTRY', {
+      sessionId,
+      levelSessionRef: levelSessionRef.current,
+      cleanText: cleanText?.slice(0, 60),
+    });
+    if (!cleanText || !isCurrentLevelSession(sessionId)) {
+      if (!isCurrentLevelSession(sessionId)) {
+        console.warn('[DIAG][guard] isCurrentLevelSession=false — location: speakText/entry-guard', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+        });
+      }
+      return;
+    }
 
     await fallbackSpeakText(cleanText, sessionId);
   };
@@ -646,7 +759,16 @@ const Main: React.FC = () => {
     userAudioMessage: Message,
     sessionId = levelSessionRef.current,
   ) => {
+    console.log('[DIAG][continueNpcDialogue] ENTRY', {
+      sessionId,
+      levelSessionRef: levelSessionRef.current,
+      spokenText,
+    });
     if (!isCurrentLevelSession(sessionId)) {
+      console.warn('[DIAG][guard] isCurrentLevelSession=false — location: continueNpcDialogue/entry', {
+        sessionId,
+        levelSessionRef: levelSessionRef.current,
+      });
       return;
     }
 
@@ -695,13 +817,28 @@ const Main: React.FC = () => {
           console.warn('Task validator request failed:', error);
         });
 
+      console.log('[DIAG][continueNpcDialogue] BEFORE /api/chat', {
+        sessionId,
+        levelSessionRef: levelSessionRef.current,
+      });
       const chatResponse = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: spokenText, history: nextHistory, levelId: currentLevel.id }),
       });
+      console.log('[DIAG][continueNpcDialogue] AFTER /api/chat', {
+        sessionId,
+        levelSessionRef: levelSessionRef.current,
+        status: chatResponse.status,
+      });
 
-      if (!isCurrentLevelSession(sessionId)) return;
+      if (!isCurrentLevelSession(sessionId)) {
+        console.warn('[DIAG][guard] isCurrentLevelSession=false — location: continueNpcDialogue/after-chat', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+        });
+        return;
+      }
 
       if (!chatResponse.ok) {
         throw new Error(`Chat request failed: ${chatResponse.status}`);
@@ -721,6 +858,10 @@ const Main: React.FC = () => {
       addMessage('assistant', fallbackText, true, undefined, sessionId);
       void speakText(fallbackText, sessionId);
     } finally {
+      console.log('[DIAG][continueNpcDialogue] EXIT (finally)', {
+        sessionId,
+        levelSessionRef: levelSessionRef.current,
+      });
       if (isCurrentLevelSession(sessionId)) {
         setIsAwaitingNpc(false);
       }
@@ -847,6 +988,10 @@ const Main: React.FC = () => {
       });
 
       if (!isCurrentLevelSession(sessionId)) {
+        console.warn('[DIAG][guard] isCurrentLevelSession=false — location: onRecorded/entry', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+        });
         URL.revokeObjectURL(audioUrl);
         return;
       }
@@ -866,6 +1011,7 @@ const Main: React.FC = () => {
 
       // STT 拿到了英文文字 → 立即触发 NPC 对话（与讯飞评测并行）
       if (sttHasEnglish) {
+        console.log('[DIAG][continueNpcDialogue] call-site (STT path)', { spokenText });
         void continueNpcDialogue(spokenText, userAudioMessage, sessionId);
       }
 
@@ -891,11 +1037,28 @@ const Main: React.FC = () => {
         blobSize: evaluationBlob.size,
         blobType: evaluationBlob.type,
         referenceText: spokenText || '(empty — backend will use fallback)',
+        sampleRate: 16000,
+        channelCount: 1,
+        durationSec: ((evaluationBlob.size - 44) / (16000 * 2)).toFixed(3),
       });
       setIsEvaluatingSpeech(true);
       try {
+        console.log('[DIAG][evaluateRecordedSpeech] BEFORE await', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+          blobSize: evaluationBlob.size,
+        });
         const evaluation = await evaluateRecordedSpeech(evaluationBlob, spokenText, sessionId);
+        console.log('[DIAG][evaluateRecordedSpeech] AFTER success', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+          hasEvaluation: Boolean(evaluation),
+        });
         if (!isCurrentLevelSession(sessionId)) {
+          console.warn('[DIAG][guard] isCurrentLevelSession=false — location: onRecorded/after-evaluate', {
+            sessionId,
+            levelSessionRef: levelSessionRef.current,
+          });
           return;
         }
 
@@ -932,6 +1095,7 @@ const Main: React.FC = () => {
             )));
 
             // 用清洗后的文字触发 NPC 对话
+            console.log('[DIAG][continueNpcDialogue] call-site (Xunfei fallback path)', { cleanRecognized });
             void continueNpcDialogue(
               cleanRecognized,
               { ...userAudioMessage, text: cleanRecognized },
@@ -945,6 +1109,11 @@ const Main: React.FC = () => {
           }
         }
       } catch (error) {
+        console.error('[DIAG][evaluateRecordedSpeech] CATCH error', {
+          sessionId,
+          levelSessionRef: levelSessionRef.current,
+          error: String(error),
+        });
         console.error('❌ [Evaluate] 讯飞评测失败:', error);
         if (isCurrentLevelSession(sessionId)) {
           setPronunciationError('iFlytek scoring is unavailable for this recording, but the dialogue has continued normally.');

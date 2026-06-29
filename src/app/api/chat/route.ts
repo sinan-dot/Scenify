@@ -133,6 +133,9 @@ Requirements:
 }
 
 async function createChatCompletion(messages: ChatMessage[]) {
+  // ───────────── [诊断 第五步：DeepSeek Prompt] ─────────────
+  console.log('💬 [Step 5 - DeepSeek Prompt] 完整 messages:', JSON.stringify(messages, null, 2));
+
   const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -149,7 +152,13 @@ async function createChatCompletion(messages: ChatMessage[]) {
     throw new Error(`DeepSeek API error: ${await response.text()}`);
   }
 
-  return response.json() as Promise<DeepSeekCompletion>;
+  const json = await response.json() as DeepSeekCompletion;
+
+  // ───────────── [诊断 第五步：DeepSeek Response] ─────────────
+  console.log('💬 [Step 5 - DeepSeek Response] 完整返回:', JSON.stringify(json, null, 2));
+  console.log('💬 [Step 5 - DeepSeek Response] reply content:', json.choices?.[0]?.message?.content ?? '(empty)');
+
+  return json;
 }
 
 export async function POST(req: Request) {
@@ -173,6 +182,20 @@ export async function POST(req: Request) {
     );
     const currentMessage =
       getText(body.message) || getText(body.content) || getText(body.prompt);
+
+    // ───────────── [诊断 第四步：发送给 DeepSeek 的 Transcript] ─────────────
+    console.log('📝 [Step 4 - 发送给 DeepSeek] Transcript:', currentMessage || '(empty string)');
+    if (!currentMessage) {
+      console.warn('📝 [Step 4 - 发送给 DeepSeek] ⚠️ Transcript is empty');
+    }
+    console.log('📝 [Step 4 - 发送给 DeepSeek] history user messages:',
+      JSON.stringify(
+        normalizeHistory(body.messages ?? body.history ?? body.conversationHistory)
+          .filter((m) => m.role === 'user')
+          .map((m) => m.content),
+      ),
+    );
+
     const isReportMode = currentMessage.startsWith(REPORT_MODE_PREFIX);
     const effectiveCurrentMessage = isReportMode
       ? currentMessage.slice(REPORT_MODE_PREFIX.length).trim()

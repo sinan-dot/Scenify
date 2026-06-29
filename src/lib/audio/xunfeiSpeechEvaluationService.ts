@@ -450,6 +450,18 @@ export async function evaluateSpeechWithXunfei({
     pcmBytes: audioBuffer.length,
   });
 
+  // ───────────── [诊断 第二步：发送给讯飞之前] ─────────────
+  // 讯飞要求 16kHz / 单声道 / 16-bit PCM
+  const SAMPLE_RATE = 16000;
+  const CHANNEL_COUNT = 1;
+  const BYTES_PER_SAMPLE = 2; // 16-bit
+  const pcmSampleLength = audioBuffer.length / BYTES_PER_SAMPLE;
+  const base64Length = audioBuffer.toString('base64').length;
+  console.log('🚀 [Step 2 - 发送给讯飞之前] Sample Rate:', SAMPLE_RATE);
+  console.log('🚀 [Step 2 - 发送给讯飞之前] Channel Count:', CHANNEL_COUNT);
+  console.log('🚀 [Step 2 - 发送给讯飞之前] PCM 长度 (bytes):', audioBuffer.length, '/ samples:', pcmSampleLength);
+  console.log('🚀 [Step 2 - 发送给讯飞之前] Base64 长度:', base64Length);
+
   if (audioBuffer.length === 0) {
     console.error('[XunfeiService] Audio payload is empty after PCM extraction');
     throw new Error('Audio payload is empty.');

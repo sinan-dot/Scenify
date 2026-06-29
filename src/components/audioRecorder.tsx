@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from 'react';
 import styled from 'styled-components';
 import { HintPanel } from '@/components/HintPanel';
 import type { LevelHints } from '@/config/levelsConfig';
@@ -213,6 +214,61 @@ export function AudioRecorder({
   onStopRecording,
   onPlayFinalVideo,
 }: AudioRecorderProps) {
+  // ─────────────────────────────────────────────────────────────────────
+  // 跨浏览器稳定录音手势:
+  // - pointerdown 开始录音, 并在 window 上注册 pointerup/pointercancel 监听
+  //   来结束。绑定到 window 而非按钮, 保证即使指针移出按钮、或按钮因 React
+  //   重渲染而样式变化, 都不会丢失"松手"事件。
+  // - 不使用 setPointerCapture: Edge/Chromium 在指针被捕获的元素重渲染时会
+  //   主动派发 pointercancel, 这正是导致 Edge 录音几百毫秒被掐断的根因。
+  // - 只有真正的 pointerup (用户松手) 才正常结束; pointercancel 仅作为指针被
+  //   系统强制中断(来电/息屏)的安全网。普通 React 重渲染不再触发它。
+  // ─────────────────────────────────────────────────────────────────────
+  const isHoldingRef = useRef(false);
+  const startRef = useRef(onStartRecording);
+  const stopRef = useRef(onStopRecording);
+
+  // 保持 ref 指向最新回调, 避免全局监听器闭包捕获到旧函数
+  useEffect(() => {
+    startRef.current = onStartRecording;
+    stopRef.current = onStopRecording;
+  }, [onStartRecording, onStopRecording]);
+
+  // 稳定的结束逻辑 + 全局监听器, 整个组件生命周期内引用不变
+  const onWindowPointerUpRef = useRef<(e: PointerEvent) => void>(() => {});
+  const onWindowPointerCancelRef = useRef<(e: PointerEvent) => void>(() => {});
+
+  useEffect(() => {
+    const endHold = () => {
+      if (!isHoldingRef.current) return;
+      isHoldingRef.current = false;
+      window.removeEventListener('pointerup', onWindowPointerUpRef.current);
+      window.removeEventListener('pointercancel', onWindowPointerCancelRef.current);
+      stopRef.current();
+    };
+    onWindowPointerUpRef.current = () => endHold();
+    onWindowPointerCancelRef.current = () => endHold();
+
+    // 卸载兜底: 仍在按住则结束并清理
+    return () => {
+      if (isHoldingRef.current) {
+        isHoldingRef.current = false;
+        window.removeEventListener('pointerup', onWindowPointerUpRef.current);
+        window.removeEventListener('pointercancel', onWindowPointerCancelRef.current);
+        stopRef.current();
+      }
+    };
+  }, []);
+
+  const handleVoicePointerDown = (event: React.PointerEvent) => {
+    event.preventDefault();
+    if (isHoldingRef.current) return;
+    isHoldingRef.current = true;
+    window.addEventListener('pointerup', onWindowPointerUpRef.current);
+    window.addEventListener('pointercancel', onWindowPointerCancelRef.current);
+    startRef.current();
+  };
+
   if (completionSummary) {
     return (
       <BottomPanel>
@@ -245,19 +301,7 @@ export function AudioRecorder({
         ) : (
           <VoiceHoldBtn
             $recording={isRecording}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              event.currentTarget.setPointerCapture(event.pointerId);
-              onStartRecording();
-            }}
-            onPointerUp={(event) => {
-              event.preventDefault();
-              if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                event.currentTarget.releasePointerCapture(event.pointerId);
-              }
-              onStopRecording();
-            }}
-            onPointerCancel={onStopRecording}
+            onPointerDown={handleVoicePointerDown}
           >
             {isRecording ? 'Listening...' : 'Hold to Speak'}
           </VoiceHoldBtn>

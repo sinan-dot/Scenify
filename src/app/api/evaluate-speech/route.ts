@@ -27,6 +27,14 @@ export async function POST(req: Request) {
       referenceText: expectedText,
     });
 
+    // ───────────── [诊断 第三步：讯飞返回] ─────────────
+    console.log('📊 [Step 3 - 讯飞返回] HTTP Status: 200 (route success)');
+    console.log('📊 [Step 3 - 讯飞返回] Response JSON:', JSON.stringify(result, null, 2));
+    console.log('📊 [Step 3 - 讯飞返回] Error Code:', (result as any).code ?? '(none)');
+    console.log('📊 [Step 3 - 讯飞返回] Error Message:', (result as any).error ?? (result as any).message ?? '(none)');
+    console.log('📊 [Step 3 - 讯飞返回] overallScore:', result.overallScore);
+    console.log('📊 [Step 3 - 讯飞返回] recognizedText:', result.recognizedText ?? '(empty)');
+
     console.log('[API][Xunfei] Evaluation completed', {
       overallScore: result.overallScore,
       recognizedText: result.recognizedText,
@@ -34,6 +42,11 @@ export async function POST(req: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
+    // ───────────── [诊断 第三步：讯飞返回 - 错误路径] ─────────────
+    console.error('📊 [Step 3 - 讯飞返回] HTTP Status: 500 (route error)');
+    console.error('📊 [Step 3 - 讯飞返回] Error Code:', (error as any)?.code ?? '(none)');
+    console.error('📊 [Step 3 - 讯飞返回] Error Message:', error instanceof Error ? error.message : String(error));
+    console.error('📊 [Step 3 - 讯飞返回] Full Error:', error);
     console.error('[API][Xunfei] Speech evaluation route error:', error);
     return NextResponse.json(
       {
